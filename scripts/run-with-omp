@@ -2,6 +2,8 @@
 set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+config_dir="${TAWX_COWORK_HOME:-${HOME}/taw-cowork}"
+config_path="${TAWX_COWORK_CONFIG:-${config_dir}/config.yaml}"
 broker_bind="${ROUTELLM_BROKER_BIND:-127.0.0.1:19100}"
 auth_bind="${ROUTELLM_AUTH_BIND:-127.0.0.1:19101}"
 broker_url="http://${broker_bind}"
@@ -29,6 +31,11 @@ export OMP_ROUTER_REASONING_MODEL OMP_ROUTER_CREATIVE_MODEL OMP_ROUTER_GENERAL_M
 
 # Reuse the vault credential for OpenRouter-only server tools.
 export OPENROUTER_API_KEY="$(omp token openrouter)"
+
+if [[ ! -f "$config_path" ]]; then
+  install -d -m 700 "$config_dir"
+  install -m 600 "$repo_dir/etc/config.omp.yaml" "$config_path"
+fi
 
 cleanup() {
   for pid in "${pids[@]}"; do
@@ -73,7 +80,7 @@ if [[ "$auth_ready" != true ]]; then
 fi
 
 cd "$repo_dir"
-go run ./cmd/llm-gateway run etc/config.omp.yaml &
+go run ./cmd/llm-gateway run "$config_path" &
 gateway_pid="$!"
 pids+=("$gateway_pid")
 wait "$gateway_pid"

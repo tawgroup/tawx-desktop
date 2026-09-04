@@ -1,9 +1,9 @@
 {
-  "name": "llm-router-ui",
+  "name": "tawx-cowork",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "ChatOpenApi UI bundled with llm-gateway.",
+  "description": "TAWX CoWork chat UI bundled with llm-gateway.",
   "license": "MIT",
   "scripts": {
     "dev": "vite",

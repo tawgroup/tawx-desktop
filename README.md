@@ -1,4 +1,4 @@
-# llm-router-ui
+# TAWX CoWork
 
 An OpenAI-compatible API proxy that routes requests to OpenAI, Anthropic, and any OpenAI-compatible backend (Ollama, vLLM, llama-server, SGLang, etc.). Optionally expose the gateway via [zrok](https://zrok.io) for zero-trust access.
 
@@ -302,13 +302,13 @@ The classifier model and instruction are both settings. Change `classifier.model
 
 ### Reuse OMP models and credentials
 
-`etc/config.omp.yaml` points the gateway at OMP's local auth gateway. The launcher reads OMP's existing `modelRoles` and credential vault, so no model list or provider key is duplicated in this repository. Routes use the roles as follows: `default` for fast/general, `main` for coding/creative, `slow` for reasoning, and `smol` for classification.
+The launcher creates and reads `~/taw-cowork/config.yaml`, points the gateway at OMP's local auth gateway, and loads the OpenRouter key from OMP's credential vault at runtime. No secret is committed to this repository. Routes use OMP roles as follows: `default` for fast/general, `main` for coding/creative, `slow` for reasoning, and `smol` for classification.
 
 ```bash
 ./scripts/run-with-omp
 ```
 
-Then point an OpenAI-compatible client at `http://127.0.0.1:18080/v1` and select `auto`. Change models with OMP's normal model-role settings. `classifier.prompt` in `etc/config.omp.yaml` remains gateway-specific because OMP has no routing-policy setting.
+Then open `http://127.0.0.1:18080/`, or point an OpenAI-compatible client at `http://127.0.0.1:18080/v1` and select `auto`. Edit `~/taw-cowork/config.yaml` to change routing policy; change model roles through OMP.
 
 ### Heuristic Match Conditions
 
