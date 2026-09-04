@@ -80,7 +80,11 @@ if [[ "$auth_ready" != true ]]; then
 fi
 
 cd "$repo_dir"
-go run ./cmd/llm-gateway run "$config_path" &
+if [[ -n "${TAWX_COWORK_BIN:-}" ]]; then
+  "$TAWX_COWORK_BIN" run "$config_path" &
+else
+  go run ./cmd/llm-gateway run "$config_path" &
+fi
 gateway_pid="$!"
 pids+=("$gateway_pid")
 wait "$gateway_pid"

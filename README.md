@@ -310,6 +310,17 @@ The launcher creates and reads `~/taw-cowork/config.yaml`, points the gateway at
 
 Then open `http://127.0.0.1:18080/`, or point an OpenAI-compatible client at `http://127.0.0.1:18080/v1` and select `auto`. Edit `~/taw-cowork/config.yaml` to change routing policy; change model roles through OMP.
 
+### macOS desktop app
+
+The Electron shell reuses the same UI and starts/stops the bundled gateway automatically. OMP must already be installed and signed in.
+
+```bash
+cd desktop
+npm install
+npm run dist:mac
+open "dist/mac-arm64/TAWX CoWork.app"
+```
+
 ### Heuristic Match Conditions
 
 Each heuristic rule has a `match` block with one or more conditions. When multiple conditions are specified in a single rule, all must match (AND logic). Within `keywords`, any keyword matching triggers the rule (OR logic). Available conditions:

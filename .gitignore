@@ -13,6 +13,8 @@ node_modules/
 
 # artifacts
 /dist/
+/desktop/dist/
+/desktop/gateway-bin/
 
 # generated files
 .docusaurus
