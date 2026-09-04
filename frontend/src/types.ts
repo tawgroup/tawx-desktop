@@ -9,6 +9,8 @@ export interface Message {
   /** Populated when the assistant turn failed; renders inline as an error bubble. */
   error?: string;
   model?: string;
+  reasoning?: string;
+  cost?: number;
 }
 
 export interface Chat {
@@ -66,15 +68,17 @@ export interface ChatCompletionRequest {
 
 export interface StreamDelta {
   model?: string;
+  usage?: { cost?: number };
   choices?: Array<{
-    delta?: { content?: string; role?: Role };
+    delta?: { content?: string; reasoning?: string; role?: Role };
     finish_reason?: string | null;
   }>;
 }
 
 export interface CompletionResponse {
   model?: string;
-  choices?: Array<{ message?: { content?: string } }>;
+  choices?: Array<{ message?: { content?: string; reasoning?: string } }>;
+  usage?: { cost?: number };
 }
 
 export const DEFAULT_SETTINGS: Settings = {

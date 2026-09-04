@@ -42,6 +42,16 @@ func TestParseStreamChunkErrorEnvelope(t *testing.T) {
 	}
 }
 
+func TestParseStreamChunkReasoningAndCost(t *testing.T) {
+	chunk, err := parseStreamChunk(`{"choices":[{"index":0,"delta":{"reasoning":"thinking"}}],"usage":{"cost":0.001}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chunk.Choices[0].Delta.Reasoning != "thinking" || chunk.Usage == nil || chunk.Usage.Cost == nil || *chunk.Usage.Cost != 0.001 {
+		t.Fatalf("chunk = %+v", chunk)
+	}
+}
+
 func TestOpenAIStreamErrorEnvelopeSurfaces(t *testing.T) {
 	o := NewOpenAI("test-key", "")
 

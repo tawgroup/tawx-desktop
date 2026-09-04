@@ -170,11 +170,20 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
   controller = new AbortController();
   let accumulated = '';
   let routedModel = model;
+  let reasoning = '';
+  let cost: number | undefined;
 
   const flush = (content: string, error?: string) => {
     set({
       messages: get().messages.map((m) =>
-        m.id === assistantId ? { ...m, content, model: routedModel, ...(error ? { error } : {}) } : m,
+        m.id === assistantId ? {
+          ...m,
+          content,
+          model: routedModel,
+          ...(reasoning ? { reasoning } : {}),
+          ...(cost !== undefined ? { cost } : {}),
+          ...(error ? { error } : {}),
+        } : m,
       ),
     });
   };
@@ -197,6 +206,14 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
           routedModel = selected;
           flush(accumulated);
         },
+        onReasoning: (token) => {
+          reasoning += token;
+          flush(accumulated);
+        },
+        onCost: (value) => {
+          cost = value;
+          flush(accumulated);
+        },
       });
     } else {
       const result = await fetchCompletion({
@@ -210,10 +227,12 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
       });
       accumulated = result.content;
       routedModel = result.model || model;
+      reasoning = result.reasoning || '';
+      cost = result.cost;
       flush(accumulated);
     }
 
-    const final: Message = { ...assistantMsg, content: accumulated, model: routedModel };
+    const final: Message = { ...assistantMsg, content: accumulated, model: routedModel, reasoning: reasoning || undefined, cost };
     await db.saveMessage(final);
     await touchChat(set, get, chatId);
   } catch (err) {
@@ -221,8 +240,8 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
 
     if (aborted) {
       // Keep whatever streamed in before the user hit stop.
-      if (accumulated) {
-        const partial: Message = { ...assistantMsg, content: accumulated, model: routedModel };
+      if (accumulated || reasoning) {
+        const partial: Message = { ...assistantMsg, content: accumulated, model: routedModel, reasoning: reasoning || undefined, cost };
         await db.saveMessage(partial);
         await touchChat(set, get, chatId);
       } else {
@@ -238,7 +257,7 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
               ? err.message
               : 'Unknown error';
 
-      const failed: Message = { ...assistantMsg, content: accumulated, model: routedModel, error: message };
+      const failed: Message = { ...assistantMsg, content: accumulated, model: routedModel, reasoning: reasoning || undefined, cost, error: message };
       await db.saveMessage(failed);
       flush(accumulated, message);
       set({ error: message });

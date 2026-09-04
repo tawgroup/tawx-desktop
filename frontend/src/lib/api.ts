@@ -83,6 +83,8 @@ interface StreamOptions {
   signal?: AbortSignal;
   onToken: (token: string) => void;
   onModel?: (model: string) => void;
+  onReasoning?: (token: string) => void;
+  onCost?: (cost: number) => void;
   webSearch?: WebSearchEngine;
 }
 
@@ -118,6 +120,8 @@ export async function streamCompletion({
   signal,
   onToken,
   onModel,
+  onReasoning,
+  onCost,
   webSearch,
 }: StreamOptions): Promise<string> {
   const res = await fetch(proxyUrl(provider.baseUrl, '/chat/completions'), {
@@ -159,6 +163,9 @@ export async function streamCompletion({
           try {
             const chunk = JSON.parse(payload) as StreamDelta;
             if (chunk.model) onModel?.(chunk.model);
+            if (chunk.usage?.cost !== undefined) onCost?.(chunk.usage.cost);
+            const reasoning = chunk.choices?.[0]?.delta?.reasoning;
+            if (reasoning) onReasoning?.(reasoning);
             const token = chunk.choices?.[0]?.delta?.content;
             if (token) {
               full += token;
@@ -186,7 +193,7 @@ export async function fetchCompletion({
   maxTokens,
   signal,
   webSearch,
-}: Omit<StreamOptions, 'onToken' | 'onModel'>): Promise<{ content: string; model?: string }> {
+}: Omit<StreamOptions, 'onToken' | 'onModel' | 'onReasoning' | 'onCost'>): Promise<{ content: string; model?: string; reasoning?: string; cost?: number }> {
   const res = await fetch(proxyUrl(provider.baseUrl, '/chat/completions'), {
     method: 'POST',
     headers: headers(provider),
@@ -196,5 +203,10 @@ export async function fetchCompletion({
 
   if (!res.ok) throw new ApiError(await parseError(res), res.status);
   const data = (await res.json()) as CompletionResponse;
-  return { content: data.choices?.[0]?.message?.content ?? '', model: data.model };
+  return {
+    content: data.choices?.[0]?.message?.content ?? '',
+    model: data.model,
+    reasoning: data.choices?.[0]?.message?.reasoning,
+    cost: data.usage?.cost,
+  };
 }

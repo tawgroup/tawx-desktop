@@ -11,6 +11,7 @@ type ChatCompletionRequest struct {
 	TopP             *float64        `json:"top_p,omitempty"`
 	N                *int            `json:"n,omitempty"`
 	Stream           bool            `json:"stream,omitempty"`
+	StreamOptions    *StreamOptions  `json:"stream_options,omitempty"`
 	Stop             any             `json:"stop,omitempty"` // string or []string
 	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
 	FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
@@ -24,6 +25,7 @@ type ChatCompletionRequest struct {
 type Message struct {
 	Role       string     `json:"role"`
 	Content    any        `json:"content"` // string or []ContentPart
+	Reasoning  string     `json:"reasoning,omitempty"`
 	Name       string     `json:"name,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
@@ -92,6 +94,11 @@ type ResponseFormat struct {
 	Type string `json:"type"`
 }
 
+// StreamOptions controls optional metadata in streaming responses.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"`
+}
+
 // ChatCompletionResponse represents an OpenAI-compatible chat completion response.
 type ChatCompletionResponse struct {
 	ID                string   `json:"id"`
@@ -117,14 +124,16 @@ type Choice struct {
 type Delta struct {
 	Role      string     `json:"role,omitempty"`
 	Content   string     `json:"content,omitempty"`
+	Reasoning string     `json:"reasoning,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // Usage represents token usage information.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens     int      `json:"prompt_tokens"`
+	CompletionTokens int      `json:"completion_tokens"`
+	TotalTokens      int      `json:"total_tokens"`
+	Cost             *float64 `json:"cost,omitempty"`
 }
 
 // StreamChunk represents a chunk in a streaming response.
@@ -134,6 +143,7 @@ type StreamChunk struct {
 	Created           int64    `json:"created"`
 	Model             string   `json:"model"`
 	Choices           []Choice `json:"choices"`
+	Usage             *Usage   `json:"usage,omitempty"`
 	SystemFingerprint string   `json:"system_fingerprint,omitempty"`
 }
 

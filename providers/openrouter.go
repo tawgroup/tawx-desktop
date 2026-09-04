@@ -26,6 +26,7 @@ func (o *OpenRouter) ChatCompletion(ctx context.Context, req *ChatCompletionRequ
 func (o *OpenRouter) ChatCompletionStream(ctx context.Context, req *ChatCompletionRequest) (<-chan StreamEvent, error) {
 	copy := *req
 	copy.Model = strings.TrimPrefix(req.Model, openRouterPrefix)
+	copy.StreamOptions = &StreamOptions{IncludeUsage: true}
 	return o.upstream.ChatCompletionStream(ctx, &copy)
 }
 

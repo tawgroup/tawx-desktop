@@ -151,6 +151,17 @@ function MessageBubble({ message, isStreaming }: Props) {
             )}
           </div>
 
+          {message.reasoning && (
+            <details className="mb-3 rounded-lg border border-surface-200 px-3 py-2 text-sm dark:border-surface-700">
+              <summary className="cursor-pointer select-none text-surface-500 dark:text-surface-400">
+                Thinking
+              </summary>
+              <div className="mt-2 whitespace-pre-wrap text-surface-600 dark:text-surface-300">
+                {message.reasoning}
+              </div>
+            </details>
+          )}
+
           <div className={cn('prose-chat', isStreaming && !message.content && 'caret')}>
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
@@ -174,6 +185,12 @@ function MessageBubble({ message, isStreaming }: Props) {
                          text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
             >
               {message.error}
+            </div>
+          )}
+
+          {message.cost !== undefined && (
+            <div className="mt-2 text-xs text-surface-500 dark:text-surface-400">
+              Cost {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 8 }).format(message.cost)}
             </div>
           )}
 
