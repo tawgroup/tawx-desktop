@@ -2,6 +2,7 @@ import type {
   ApprovalDecision,
   ChatCompletionMessage,
   CompletionResponse,
+  CompletionUsage,
   DesktopTaskRequest,
   DesktopTaskSnapshot,
   ModelInfo,
@@ -91,8 +92,24 @@ interface StreamOptions {
   onToken: (token: string) => void;
   onModel?: (model: string) => void;
   onReasoning?: (token: string) => void;
-  onCost?: (cost: number) => void;
+  onUsage?: (usage: NormalizedCompletionUsage) => void;
   webSearch?: WebSearchEngine;
+}
+
+export interface NormalizedCompletionUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cost?: number;
+}
+
+function normalizeCompletionUsage(usage?: CompletionUsage): NormalizedCompletionUsage | undefined {
+  if (!usage) return undefined;
+  const normalized = {
+    inputTokens: usage.prompt_tokens ?? usage.input_tokens,
+    outputTokens: usage.completion_tokens ?? usage.output_tokens,
+    cost: usage.cost,
+  };
+  return Object.values(normalized).some((value) => value !== undefined) ? normalized : undefined;
 }
 
 export function completionBody(options: Pick<StreamOptions, 'model' | 'messages' | 'temperature' | 'maxTokens' | 'webSearch'>, stream: boolean) {
@@ -100,6 +117,7 @@ export function completionBody(options: Pick<StreamOptions, 'model' | 'messages'
     model: options.model,
     messages: options.messages,
     stream,
+    ...(stream ? { stream_options: { include_usage: true } } : {}),
     ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
     ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
     ...(options.webSearch ? {
@@ -128,7 +146,7 @@ export async function streamCompletion({
   onToken,
   onModel,
   onReasoning,
-  onCost,
+  onUsage,
   webSearch,
 }: StreamOptions): Promise<string> {
   const res = await fetch(proxyUrl(provider.baseUrl, '/chat/completions'), {
@@ -170,7 +188,8 @@ export async function streamCompletion({
           try {
             const chunk = JSON.parse(payload) as StreamDelta;
             if (chunk.model) onModel?.(chunk.model);
-            if (chunk.usage?.cost !== undefined) onCost?.(chunk.usage.cost);
+            const usage = normalizeCompletionUsage(chunk.usage);
+            if (usage) onUsage?.(usage);
             const reasoning = chunk.choices?.[0]?.delta?.reasoning;
             if (reasoning) onReasoning?.(reasoning);
             const token = chunk.choices?.[0]?.delta?.content;
@@ -200,7 +219,7 @@ export async function fetchCompletion({
   maxTokens,
   signal,
   webSearch,
-}: Omit<StreamOptions, 'onToken' | 'onModel' | 'onReasoning' | 'onCost'>): Promise<{ content: string; model?: string; reasoning?: string; cost?: number }> {
+}: Omit<StreamOptions, 'onToken' | 'onModel' | 'onReasoning' | 'onUsage'>): Promise<{ content: string; model?: string; reasoning?: string; usage?: NormalizedCompletionUsage }> {
   const res = await fetch(proxyUrl(provider.baseUrl, '/chat/completions'), {
     method: 'POST',
     headers: headers(provider),
@@ -214,7 +233,7 @@ export async function fetchCompletion({
     content: data.choices?.[0]?.message?.content ?? '',
     model: data.model,
     reasoning: data.choices?.[0]?.message?.reasoning,
-    cost: data.usage?.cost,
+    usage: normalizeCompletionUsage(data.usage),
   };
 }
 

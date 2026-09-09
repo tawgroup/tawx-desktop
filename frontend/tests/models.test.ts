@@ -25,4 +25,9 @@ test('completionBody adds one bounded OpenRouter web-search tool', () => {
     type: 'openrouter:web_search',
     parameters: { engine: 'exa', max_uses: 1, max_results: 3 },
   }]);
+  assert.deepEqual(body.stream_options, { include_usage: true });
+  assert.equal('stream_options' in completionBody({
+    model: 'openrouter/test',
+    messages: [{ role: 'user', content: 'hello' }],
+  }, false), false);
 });

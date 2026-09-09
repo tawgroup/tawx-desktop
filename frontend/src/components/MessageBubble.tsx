@@ -135,6 +135,14 @@ function MessageBubble({ message, isStreaming }: Props) {
     );
   }
 
+  const usageParts = [
+    message.inputTokens !== undefined ? `Input ${message.inputTokens.toLocaleString()} tokens` : undefined,
+    message.outputTokens !== undefined ? `Output ${message.outputTokens.toLocaleString()} tokens` : undefined,
+    message.cost !== undefined
+      ? `Cost ${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 8 }).format(message.cost)}`
+      : undefined,
+  ].filter((part): part is string => part !== undefined);
+
   return (
     <div className="group w-full animate-fade-in px-4 py-3 sm:px-6">
       <div className="mx-auto flex max-w-3xl gap-3 sm:gap-4">
@@ -194,9 +202,9 @@ function MessageBubble({ message, isStreaming }: Props) {
             </div>
           )}
 
-          {message.cost !== undefined && (
+          {usageParts.length > 0 && (
             <div className="mt-2 text-xs text-surface-500 dark:text-surface-400">
-              Cost {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 8 }).format(message.cost)}
+              {usageParts.join(' · ')}
             </div>
           )}
 

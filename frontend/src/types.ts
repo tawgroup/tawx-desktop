@@ -53,6 +53,8 @@ export interface Message {
   model?: string;
   reasoning?: string;
   cost?: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface Chat {
@@ -158,9 +160,17 @@ export interface ChatCompletionRequest {
   max_tokens?: number;
 }
 
+export interface CompletionUsage {
+  cost?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
 export interface StreamDelta {
   model?: string;
-  usage?: { cost?: number };
+  usage?: CompletionUsage;
   choices?: Array<{
     delta?: { content?: string; reasoning?: string; role?: Role };
     finish_reason?: string | null;
@@ -170,7 +180,7 @@ export interface StreamDelta {
 export interface CompletionResponse {
   model?: string;
   choices?: Array<{ message?: { content?: string; reasoning?: string } }>;
-  usage?: { cost?: number };
+  usage?: CompletionUsage;
 }
 
 export type TaskEventKind =

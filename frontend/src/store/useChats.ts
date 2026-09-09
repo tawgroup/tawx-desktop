@@ -1161,6 +1161,8 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
   let routedModel = model;
   let reasoning = '';
   let cost: number | undefined;
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
 
   const flush = (content: string, error?: string) => {
     set({
@@ -1171,6 +1173,8 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
             model: routedModel,
             ...(reasoning ? { reasoning } : {}),
             ...(cost !== undefined ? { cost } : {}),
+            ...(inputTokens !== undefined ? { inputTokens } : {}),
+            ...(outputTokens !== undefined ? { outputTokens } : {}),
             ...(error ? { error } : {}),
           }
         : message),
@@ -1199,8 +1203,10 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
           reasoning += token;
           flush(accumulated);
         },
-        onCost: (value) => {
-          cost = value;
+        onUsage: (value) => {
+          if (value.inputTokens !== undefined) inputTokens = value.inputTokens;
+          if (value.outputTokens !== undefined) outputTokens = value.outputTokens;
+          if (value.cost !== undefined) cost = value.cost;
           flush(accumulated);
         },
       });
@@ -1217,7 +1223,9 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
       accumulated = result.content;
       routedModel = result.model || model;
       reasoning = result.reasoning || '';
-      cost = result.cost;
+      inputTokens = result.usage?.inputTokens;
+      outputTokens = result.usage?.outputTokens;
+      cost = result.usage?.cost;
       flush(accumulated);
     }
 
@@ -1227,6 +1235,8 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
       model: routedModel,
       reasoning: reasoning || undefined,
       cost,
+      inputTokens,
+      outputTokens,
     };
     await db.saveMessage(final);
   } catch (cause) {
@@ -1239,6 +1249,8 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
           model: routedModel,
           reasoning: reasoning || undefined,
           cost,
+          inputTokens,
+          outputTokens,
         });
       } else {
         set({ messages: get().messages.filter((message) => message.id !== assistantId) });
@@ -1253,6 +1265,8 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
         model: routedModel,
         reasoning: reasoning || undefined,
         cost,
+        inputTokens,
+        outputTokens,
         error: message,
       };
       await db.saveMessage(failed);
