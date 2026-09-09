@@ -3,14 +3,18 @@ import { useChats } from '../store/useChats';
 import type { Chat } from '../types';
 import { cn, groupByDate } from '../lib/utils';
 import { IconChat, IconClose, IconEdit, IconLock, IconPlus, IconSettings, IconTrash } from './Icons';
+import type { AppMode, CoworkSection } from '../types';
 
 interface Props {
   open: boolean;
+  mode: AppMode;
+  activeSection: CoworkSection;
+  onSelectSection: (section: CoworkSection) => void;
   onClose: () => void;
   onOpenSettings: () => void;
 }
 
-export default function Sidebar({ open, onClose, onOpenSettings }: Props) {
+export default function Sidebar({ open, mode, activeSection, onSelectSection, onClose, onOpenSettings }: Props) {
   const chats = useChats((s) => s.chats);
   const activeChatId = useChats((s) => s.activeChatId);
   const selectChat = useChats((s) => s.selectChat);
@@ -20,7 +24,6 @@ export default function Sidebar({ open, onClose, onOpenSettings }: Props) {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
-
   const groups = useMemo(() => {
     const map = new Map<string, Chat[]>();
     for (const chat of chats) {
@@ -74,7 +77,7 @@ export default function Sidebar({ open, onClose, onOpenSettings }: Props) {
                        dark:hover:bg-surface-800"
           >
             <IconPlus className="h-4 w-4" />
-            New chat
+            New {mode === 'cowork' ? 'task' : 'chat'}
           </button>
           <button
             onClick={onClose}
@@ -84,6 +87,35 @@ export default function Sidebar({ open, onClose, onOpenSettings }: Props) {
             <IconClose className="h-5 w-5" />
           </button>
         </div>
+
+        {mode === 'cowork' && (
+          <div className="space-y-1 border-b border-surface-200 px-2 pb-3 dark:border-surface-800">
+            {([
+              ['tasks', '✦', 'Tasks'],
+              ['schedules', '◷', 'Schedules'],
+              ['tools', '⌘', 'Tools'],
+              ['skills', '◇', 'Skills'],
+            ] as const).map(([section, icon, label]) => (
+              <button
+                key={section}
+                type="button"
+                onClick={() => {
+                  onSelectSection(section);
+                  onClose();
+                }}
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors',
+                  activeSection === section
+                    ? 'bg-surface-100 font-medium text-surface-900 dark:bg-surface-800 dark:text-white'
+                    : 'hover:bg-surface-100 dark:hover:bg-surface-800/60',
+                )}
+              >
+                <span className="w-4 text-center text-surface-400" aria-hidden>{icon}</span>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
 
         <nav className="scrollbar-thin flex-1 space-y-4 overflow-y-auto px-2 pb-2">
           {chats.length === 0 && (

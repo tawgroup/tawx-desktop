@@ -1,4 +1,4 @@
-# TAWX CoWork
+# TAWX Desktop
 
 An OpenAI-compatible API proxy that routes requests to OpenAI, Anthropic, and any OpenAI-compatible backend (Ollama, vLLM, llama-server, SGLang, etc.). Optionally expose the gateway via [zrok](https://zrok.io) for zero-trust access.
 
@@ -302,13 +302,13 @@ The classifier model and instruction are both settings. Change `classifier.model
 
 ### Reuse OMP models and credentials
 
-The launcher creates and reads `~/taw-cowork/config.yaml`, points the gateway at OMP's local auth gateway, and loads the OpenRouter key from OMP's credential vault at runtime. No secret is committed to this repository. Routes use OMP roles as follows: `default` for fast/general, `main` for coding/creative, `slow` for reasoning, and `smol` for classification.
+The launcher creates and reads `~/tawx-desktop/config.yaml`, points the gateway at OMP's local auth gateway, and loads the OpenRouter key from OMP's credential vault at runtime. No secret is committed to this repository. Routes use OMP roles as follows: `default` for fast/general, `main` for coding/creative, `slow` for reasoning, and `smol` for classification.
 
 ```bash
 ./scripts/run-with-omp
 ```
 
-Then open `http://127.0.0.1:18080/`, or point an OpenAI-compatible client at `http://127.0.0.1:18080/v1` and select `auto`. Edit `~/taw-cowork/config.yaml` to change routing policy; change model roles through OMP.
+Then open `http://127.0.0.1:18080/`, or point an OpenAI-compatible client at `http://127.0.0.1:18080/v1` and select `auto`. Edit `~/tawx-desktop/config.yaml` to change routing policy; change model roles through OMP.
 
 ### macOS desktop app
 
@@ -318,7 +318,7 @@ The Electron shell reuses the same UI and starts/stops the bundled gateway autom
 cd desktop
 npm install
 npm run dist:mac
-open "dist/mac-arm64/TAWX CoWork.app"
+open "dist/mac-arm64/TAWX Desktop.app"
 ```
 
 ### Heuristic Match Conditions

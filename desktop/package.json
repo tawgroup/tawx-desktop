@@ -1,13 +1,13 @@
 {
-  "name": "tawx-cowork-desktop",
+  "name": "tawx-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Desktop shell for TAWX CoWork",
+  "description": "TAWX Desktop app",
   "author": "TAW Group",
   "main": "main.cjs",
   "scripts": {
     "dev": "electron .",
-    "build:gateway": "mkdir -p gateway-bin && go build -o gateway-bin/tawx-cowork ../cmd/llm-gateway",
+    "build:gateway": "mkdir -p gateway-bin && go build -o gateway-bin/tawx-desktop ../cmd/llm-gateway",
     "dist:mac": "npm run build:gateway && electron-builder --mac dir --arm64"
   },
   "devDependencies": {
@@ -15,15 +15,15 @@
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "com.tawgroup.tawx-cowork",
-    "productName": "TAWX CoWork",
+    "appId": "com.tawgroup.tawx-desktop",
+    "productName": "TAWX Desktop",
     "files": [
       "main.cjs"
     ],
     "extraResources": [
       {
-        "from": "gateway-bin/tawx-cowork",
-        "to": "tawx-cowork"
+        "from": "gateway-bin/tawx-desktop",
+        "to": "tawx-desktop"
       },
       {
         "from": "../scripts/run-with-omp",

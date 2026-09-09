@@ -90,7 +90,7 @@ func TestAPIInfo(t *testing.T) {
 func TestUI(t *testing.T) {
 	rr := httptest.NewRecorder()
 	(&Gateway{}).newHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Header().Get("Content-Type"), "text/html") || !strings.Contains(rr.Body.String(), "TAWX CoWork") {
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Header().Get("Content-Type"), "text/html") || !strings.Contains(rr.Body.String(), "TAWX Desktop") {
 		t.Fatalf("GET / returned %d (%s) with body %s", rr.Code, rr.Header().Get("Content-Type"), rr.Body.String())
 	}
 }

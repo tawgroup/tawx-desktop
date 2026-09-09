@@ -1,10 +1,14 @@
 export type Role = 'system' | 'user' | 'assistant';
+export type AppMode = 'chat' | 'cowork';
+export type CoworkSection = 'tasks' | 'schedules' | 'tools' | 'skills';
 
 export interface Message {
   id: string;
   chatId: string;
   role: Role;
   content: string;
+  /** Local project snapshot sent to the model but hidden from the chat transcript. */
+  context?: string;
   createdAt: number;
   /** Populated when the assistant turn failed; renders inline as an error bubble. */
   error?: string;

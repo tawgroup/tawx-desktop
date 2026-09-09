@@ -34,7 +34,7 @@ function startGateway() {
   const env = {
     ...process.env,
     PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
-    ...(app.isPackaged ? { TAWX_COWORK_BIN: path.join(resources, 'tawx-cowork') } : {}),
+    ...(app.isPackaged ? { TAWX_DESKTOP_BIN: path.join(resources, 'tawx-desktop') } : {}),
   };
   gateway = spawn('/bin/bash', [script], { cwd: resources, env });
   gateway.stdout.pipe(process.stdout);
@@ -47,7 +47,7 @@ function createWindow() {
     height: 820,
     minWidth: 760,
     minHeight: 540,
-    title: 'TAWX CoWork',
+    title: 'TAWX Desktop',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   void window.loadURL(url);
@@ -59,7 +59,7 @@ app.whenReady().then(async () => {
     await waitForGateway();
     createWindow();
   } catch (error) {
-    dialog.showErrorBox('TAWX CoWork could not start', error.message);
+    dialog.showErrorBox('TAWX Desktop could not start', error.message);
     app.quit();
   }
 });

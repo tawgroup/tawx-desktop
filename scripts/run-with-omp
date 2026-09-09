@@ -2,8 +2,9 @@
 set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-config_dir="${TAWX_COWORK_HOME:-${HOME}/taw-cowork}"
-config_path="${TAWX_COWORK_CONFIG:-${config_dir}/config.yaml}"
+config_dir="${TAWX_DESKTOP_HOME:-${HOME}/tawx-desktop}"
+config_path="${TAWX_DESKTOP_CONFIG:-${config_dir}/config.yaml}"
+legacy_config="${HOME}/taw-cowork/config.yaml"
 broker_bind="${ROUTELLM_BROKER_BIND:-127.0.0.1:19100}"
 auth_bind="${ROUTELLM_AUTH_BIND:-127.0.0.1:19101}"
 broker_url="http://${broker_bind}"
@@ -34,7 +35,9 @@ export OPENROUTER_API_KEY="$(omp token openrouter)"
 
 if [[ ! -f "$config_path" ]]; then
   install -d -m 700 "$config_dir"
-  install -m 600 "$repo_dir/etc/config.omp.yaml" "$config_path"
+  source_config="$repo_dir/etc/config.omp.yaml"
+  [[ -f "$legacy_config" ]] && source_config="$legacy_config"
+  install -m 600 "$source_config" "$config_path"
 fi
 
 cleanup() {
@@ -80,8 +83,8 @@ if [[ "$auth_ready" != true ]]; then
 fi
 
 cd "$repo_dir"
-if [[ -n "${TAWX_COWORK_BIN:-}" ]]; then
-  "$TAWX_COWORK_BIN" run "$config_path" &
+if [[ -n "${TAWX_DESKTOP_BIN:-}" ]]; then
+  "$TAWX_DESKTOP_BIN" run "$config_path" &
 else
   go run ./cmd/llm-gateway run "$config_path" &
 fi

@@ -3,14 +3,18 @@ import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import Composer from './components/Composer';
 import SettingsModal from './components/SettingsModal';
+import CoworkHub from './components/CoworkHub';
 import { useChats } from './store/useChats';
 import { useSettings } from './store/useSettings';
 import { applyTheme } from './store/useSettings';
 import { IconMenu, IconSettings } from './components/Icons';
+import type { AppMode, CoworkSection } from './types';
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mode, setMode] = useState<AppMode>('chat');
+  const [coworkSection, setCoworkSection] = useState<CoworkSection>('tasks');
 
   const hydrateSettings = useSettings((s) => s.hydrate);
   const settingsLoaded = useSettings((s) => s.loaded);
@@ -48,6 +52,9 @@ export default function App() {
     <div className="flex h-full overflow-hidden">
       <Sidebar
         open={sidebarOpen}
+        mode={mode}
+        activeSection={coworkSection}
+        onSelectSection={setCoworkSection}
         onClose={() => setSidebarOpen(false)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
@@ -71,6 +78,30 @@ export default function App() {
           </button>
         </header>
 
+        <header className="flex h-12 shrink-0 items-center justify-center border-b border-surface-200 dark:border-surface-800 md:h-14">
+          <div className="flex rounded-xl bg-surface-100 p-1 dark:bg-surface-900" role="tablist" aria-label="Workspace mode">
+            {(['chat', 'cowork'] as const).map((item) => (
+              <button
+                key={item}
+                type="button"
+                role="tab"
+                aria-selected={mode === item}
+                onClick={() => {
+                  setMode(item);
+                  if (item === 'cowork') setCoworkSection('tasks');
+                }}
+                className={`rounded-lg px-4 py-1.5 text-sm font-medium capitalize transition-colors ${
+                  mode === item
+                    ? 'bg-white text-surface-900 shadow-sm dark:bg-surface-800 dark:text-white'
+                    : 'text-surface-500 hover:text-surface-800 dark:hover:text-surface-200'
+                }`}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        </header>
+
         {error && (
           <div
             role="alert"
@@ -84,8 +115,14 @@ export default function App() {
           </div>
         )}
 
-        <ChatView />
-        <Composer />
+        {mode === 'cowork' && coworkSection !== 'tasks' ? (
+          <CoworkHub section={coworkSection} />
+        ) : (
+          <>
+            <ChatView mode={mode} />
+            <Composer mode={mode} />
+          </>
+        )}
       </main>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

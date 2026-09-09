@@ -1,20 +1,26 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchModels } from '../lib/api';
 import { filterModels } from '../lib/models';
+import { readProject } from '../lib/project';
 import { useChats } from '../store/useChats';
 import { useSettings } from '../store/useSettings';
 import { IconSend, IconStop } from './Icons';
+import type { AppMode } from '../types';
 
 const MAX_HEIGHT = 200;
 
-export default function Composer() {
+export default function Composer({ mode }: { mode: AppMode }) {
   const [text, setText] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [models, setModels] = useState<string[]>([]);
   const [modelSource, setModelSource] = useState('');
   const [modelError, setModelError] = useState('');
+  const [attachments, setAttachments] = useState<string[]>([]);
+  const [project, setProject] = useState<Awaited<ReturnType<typeof readProject>> | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const projectRef = useRef<HTMLInputElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
 
   const send = useChats((s) => s.send);
@@ -71,7 +77,7 @@ export default function Composer() {
     const value = text.trim();
     if (!value || streaming) return;
     setText('');
-    void send(value);
+    void send(value, mode === 'cowork' ? project?.context : undefined);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -103,13 +109,28 @@ export default function Composer() {
                      shadow-sm transition-colors focus-within:border-surface-400
                      dark:border-surface-700 dark:bg-surface-900 dark:focus-within:border-surface-500"
         >
+          {attachments.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5 px-1">
+              {attachments.map((name) => (
+                <span key={name} className="flex max-w-52 items-center gap-1 rounded-lg bg-surface-100 px-2 py-1 text-xs dark:bg-surface-800">
+                  <span className="truncate">{name}</span>
+                  <button type="button" onClick={() => setAttachments((items) => items.filter((item) => item !== name))} aria-label={`Remove ${name}`}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
+          {mode === 'cowork' && project && !project.hasOverview && (
+            <p role="status" className="mb-2 rounded-lg bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+              No README or project manifest found. Choose the code repository root so the AI has enough evidence.
+            </p>
+          )}
           <textarea
             ref={ref}
             rows={1}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder={hasProvider ? 'Send a message…' : 'Add a provider in Settings to start'}
+            placeholder={hasProvider ? (mode === 'cowork' ? 'Describe the outcome you want…' : 'Send a message…') : 'Add a provider in Settings to start'}
             disabled={!hasProvider}
             aria-label="Message input"
             className="scrollbar-thin max-h-[200px] w-full resize-none bg-transparent px-1 py-1.5
@@ -119,6 +140,51 @@ export default function Composer() {
 
           <div className="mt-1 flex items-end justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1">
+              {mode === 'cowork' && (
+                <>
+                  <input
+                    ref={(element) => {
+                      projectRef.current = element;
+                      element?.setAttribute('webkitdirectory', '');
+                    }}
+                    type="file"
+                    className="hidden"
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files ?? []);
+                      if (files.length) void readProject(files).then(setProject);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={streaming}
+                    onClick={() => projectRef.current?.click()}
+                    className={`max-w-40 truncate rounded-full px-2.5 py-1.5 text-xs transition-colors ${
+                      project
+                        ? 'bg-accent/10 font-medium text-accent'
+                        : 'text-surface-600 hover:bg-surface-100 dark:text-surface-300 dark:hover:bg-surface-800'
+                    }`}
+                    title={project ? `${project.fileCount} project files selected` : 'Choose a project folder'}
+                  >
+                    ▣ {project ? `${project.name} · ${project.fileCount}` : 'Add project'}
+                  </button>
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={(event) => setAttachments(Array.from(event.target.files ?? [], (file) => file.name))}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileRef.current?.click()}
+                    className="rounded-full px-2 py-1 text-lg leading-none text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800"
+                    title="Attach files (UI preview)"
+                    aria-label="Attach files"
+                  >
+                    +
+                  </button>
+                </>
+              )}
               <div ref={pickerRef} className="relative min-w-0">
                 <button
                   type="button"
@@ -197,6 +263,18 @@ export default function Composer() {
                   <option value="exa">Exa</option>
                   <option value="parallel">Parallel</option>
                   <option value="perplexity">Perplexity</option>
+                </select>
+              )}
+
+              {mode === 'cowork' && (
+                <select
+                  aria-label="Action approval mode"
+                  className="max-w-36 rounded-full border border-surface-200 bg-transparent px-2 py-1.5 text-xs outline-none dark:border-surface-700"
+                  defaultValue="ask"
+                >
+                  <option value="ask">Ask before actions</option>
+                  <option value="plan">Plan only</option>
+                  <option value="allow">Allow safe actions</option>
                 </select>
               )}
             </div>

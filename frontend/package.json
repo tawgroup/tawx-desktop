@@ -1,9 +1,9 @@
 {
-  "name": "tawx-cowork",
+  "name": "tawx-desktop",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "TAWX CoWork chat UI bundled with llm-gateway.",
+  "description": "TAWX Desktop chat UI bundled with llm-gateway.",
   "license": "MIT",
   "scripts": {
     "dev": "vite",
