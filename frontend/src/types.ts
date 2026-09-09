@@ -1,6 +1,42 @@
 export type Role = 'system' | 'user' | 'assistant';
 export type AppMode = 'chat' | 'cowork' | 'code';
 export type CoworkSection = 'tasks' | 'schedules' | 'tools' | 'skills';
+export type ThreadPolicy = 'plan' | 'ask' | 'allow';
+export type TaskStatus =
+  | 'planning'
+  | 'running'
+  | 'waiting_approval'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+export type ApprovalDecision = 'allow_once' | 'allow_session' | 'deny';
+
+export interface Workspace {
+  path: string;
+  name: string;
+}
+
+export interface Attachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  kind: 'image' | 'text';
+  dataUrl?: string;
+  text?: string;
+  truncated?: boolean;
+}
+
+export interface ContextBudget {
+  usedTokens: number;
+  maxTokens: number;
+  remainingTokens: number;
+  compactedMessages: number;
+  compactionCount: number;
+  updatedAt: number;
+  lastCompactedAt?: number;
+  summary?: string;
+}
 
 export interface Message {
   id: string;
@@ -9,6 +45,8 @@ export interface Message {
   content: string;
   /** Local project snapshot sent to the model but hidden from the chat transcript. */
   context?: string;
+  attachments?: Attachment[];
+  taskId?: string;
   createdAt: number;
   /** Populated when the assistant turn failed; renders inline as an error bubble. */
   error?: string;
@@ -24,9 +62,26 @@ export interface Chat {
   updatedAt: number;
   /** Missing on legacy conversations, which belong to Chat. */
   mode?: AppMode;
-  /** Per-chat override; falls back to global settings when undefined. */
+  /** Per-chat override; falls back to global settings only until a legacy chat is next saved. */
   model?: string;
   systemPrompt?: string;
+  workspace?: Workspace;
+  policy?: ThreadPolicy;
+  enabledTools?: string[];
+  enabledSkillIds?: string[];
+  context?: ContextBudget;
+  taskId?: string;
+  taskStatus?: TaskStatus;
+}
+
+export interface ThreadDraft {
+  mode: AppMode;
+  systemPrompt: string;
+  workspace?: Workspace;
+  policy: ThreadPolicy;
+  enabledTools: string[];
+  enabledSkillIds: string[];
+  context: ContextBudget;
 }
 
 export const chatMode = (chat: Chat): AppMode => chat.mode ?? 'chat';
@@ -51,6 +106,9 @@ export interface Settings {
   sendOnEnter: boolean;
   webSearch: boolean;
   webSearchEngine: WebSearchEngine;
+  coworkPolicy: ThreadPolicy;
+  coworkEnabledTools: string[];
+  coworkContextTokens: number;
 }
 
 export type WebSearchEngine = 'auto' | 'exa' | 'parallel' | 'perplexity';
@@ -60,10 +118,36 @@ export interface ModelInfo {
   owned_by?: string;
 }
 
-/** Wire format for the OpenAI-compatible chat completions endpoint. */
+export interface ChatTextPart {
+  type: 'text';
+  text: string;
+}
+
+export interface ChatImagePart {
+  type: 'image_url';
+  image_url: {
+    url: string;
+    detail?: 'auto' | 'low' | 'high';
+  };
+}
+
+export type ChatContentPart = ChatTextPart | ChatImagePart;
+
+/** Wire format for OpenAI-compatible chat completion and desktop task requests. */
 export interface ChatCompletionMessage {
   role: Role;
-  content: string;
+  content: string | ChatContentPart[];
+}
+
+export interface ContextPreview {
+  systemPrompt: string;
+  workspace?: Workspace;
+  policy: ThreadPolicy;
+  enabledTools: string[];
+  enabledSkillIds: string[];
+  attachments: Attachment[];
+  messages: ChatCompletionMessage[];
+  budget: ContextBudget;
 }
 
 export interface ChatCompletionRequest {
@@ -89,6 +173,184 @@ export interface CompletionResponse {
   usage?: { cost?: number };
 }
 
+export type TaskEventKind =
+  | 'status'
+  | 'assistant_delta'
+  | 'reasoning_delta'
+  | 'todo'
+  | 'tool_call'
+  | 'approval_required'
+  | 'tool_result'
+  | 'file_diff'
+  | 'artifact'
+  | 'context'
+  | 'usage'
+  | 'done'
+  | 'error';
+
+export interface TaskEvent<P = unknown> {
+  id: string;
+  taskId: string;
+  kind: TaskEventKind;
+  timestamp: number;
+  payload: P;
+}
+
+export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
+
+export interface TaskTodo {
+  id: string;
+  text: string;
+  status: TodoStatus;
+  detail?: string;
+  updatedAt: number;
+}
+
+export type ToolCallStatus =
+  | 'pending'
+  | 'waiting_approval'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'denied';
+
+export interface TaskToolCall {
+  id: string;
+  name: string;
+  arguments: unknown;
+  status: ToolCallStatus;
+  approvalId?: string;
+  result?: unknown;
+  error?: string;
+  startedAt: number;
+  completedAt?: number;
+}
+
+export interface TaskApproval {
+  id: string;
+  toolCallId?: string;
+  tool: string;
+  arguments: unknown;
+  reason?: string;
+  status: 'pending' | 'allowed' | 'denied';
+  decision?: ApprovalDecision;
+  requestedAt: number;
+  resolvedAt?: number;
+}
+
+export interface TaskFileDiff {
+  id: string;
+  path: string;
+  diff: string;
+  operation?: 'create' | 'modify' | 'delete' | 'rename';
+  toolCallId?: string;
+  timestamp: number;
+  undone?: boolean;
+}
+
+export interface TaskArtifact {
+  id: string;
+  name: string;
+  type: string;
+  url?: string;
+  path?: string;
+  content?: string;
+  size?: number;
+  createdAt: number;
+}
+
+export interface TaskUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cost?: number;
+}
+
+export interface CoworkTask {
+  id: string;
+  threadId: string;
+  status: TaskStatus;
+  mode: AppMode;
+  model?: string;
+  systemPrompt: string;
+  workspace?: Workspace;
+  policy: ThreadPolicy;
+  enabledTools: string[];
+  enabledSkillIds: string[];
+  createdAt: number;
+  updatedAt: number;
+  events: TaskEvent[];
+  todos: TaskTodo[];
+  toolCalls: TaskToolCall[];
+  approvals: TaskApproval[];
+  diffs: TaskFileDiff[];
+  artifacts: TaskArtifact[];
+  context: ContextBudget;
+  usage: TaskUsage;
+  assistantContent: string;
+  reasoning: string;
+  error?: string;
+  lastEventId?: string;
+}
+
+export interface DesktopTaskRequest {
+  threadId: string;
+  mode: AppMode;
+  messages: ChatCompletionMessage[];
+  systemPrompt: string;
+  workspace?: Workspace;
+  policy: ThreadPolicy;
+  enabledTools: string[];
+  enabledSkillIds: string[];
+}
+
+export interface DesktopPendingApproval {
+  id: string;
+  toolCallId: string;
+  toolName: string;
+  descriptor: Record<string, unknown>;
+}
+
+export interface DesktopTaskSnapshot {
+  id: string;
+  threadId: string;
+  state?: TaskStatus;
+  status?: TaskStatus;
+  mode: AppMode;
+  model?: string;
+  systemPrompt: string;
+  workspace?: Workspace;
+  policy: ThreadPolicy;
+  enabledTools: string[];
+  enabledSkillIds?: string[];
+  createdAt: number | string;
+  updatedAt: number | string;
+  events?: TaskEvent[];
+  pendingApproval?: DesktopPendingApproval;
+  error?: string;
+}
+
+export const CORE_TOOLS = [
+  'read_file',
+  'list_directory',
+  'write_file',
+  'run_command',
+  'git_status',
+  'git_diff',
+  'git_commit',
+  'update_todo',
+] as const;
+
+export const DEFAULT_COWORK_TOOLS: string[] = [
+  'read_file',
+  'list_directory',
+  'git_status',
+  'git_diff',
+  'update_todo',
+];
+
+export const DEFAULT_CONTEXT_TOKENS = 64_000;
+
 export const DEFAULT_SETTINGS: Settings = {
   providers: [{ id: 'gateway', name: 'LLM Gateway', baseUrl: '/v1', apiKey: 'not-needed', model: 'auto' }],
   activeProviderId: 'gateway',
@@ -100,4 +362,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sendOnEnter: true,
   webSearch: false,
   webSearchEngine: 'auto',
+  coworkPolicy: 'ask',
+  coworkEnabledTools: DEFAULT_COWORK_TOOLS,
+  coworkContextTokens: DEFAULT_CONTEXT_TOKENS,
 };

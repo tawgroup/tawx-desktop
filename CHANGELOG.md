@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+FEATURE: The macOS desktop app now provides persistent Cowork and Code agents with native per-thread workspaces, iterative file/command/Git tools, inspectable prompts and context, approvals, todos, diffs, checkpoint undo, transcript attachments, skills, schedules, isolated browser automation, MCP tools, and persistent artifacts. Task state and audit history remain local and redact secrets before persistence or export; workspace containment, enabled-tool policy, and explicit gates for command, Git, browser, MCP, and other external or mutating actions remain enforced.
+
 ## v0.1.7
 
 FEATURE: Virtual API keys can now be composed from boot-resident config keys, reloadable strict-YAML files, and a versioned HTTP key API. Sources refresh without restarting, converge through polling plus optional file watches and Unix `SIGHUP`, hold last-known-good on reload failure, and support optional fail-closed exclusion through `max_staleness`. The resident store keeps only SHA-256 digests, source records may publish `key_sha256` and exact-boundary `expires_at`, HTTP refreshes support ETag/conditional `304`, and four OpenTelemetry instruments expose refresh results, freshness, exclusion, and resident cardinality. See [docs/current/key-sources.md](docs/current/key-sources.md).

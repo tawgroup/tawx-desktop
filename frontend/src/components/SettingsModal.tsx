@@ -351,15 +351,19 @@ export default function SettingsModal({ open, onClose }: Props) {
 
             <div className="space-y-4">
               <div>
-                <label className="label" htmlFor="sys">System prompt</label>
+                <label className="label" htmlFor="sys">Default system prompt for new threads</label>
                 <textarea
                   id="sys"
                   rows={3}
                   className="input resize-y"
-                  placeholder="You are a helpful assistant."
+                  placeholder="Set the standing instructions for new threads."
                   value={settings.systemPrompt}
                   onChange={(e) => void update({ systemPrompt: e.target.value })}
                 />
+                <p className="mt-1.5 text-xs leading-5 text-surface-500">
+                  New threads save a snapshot. Existing snapshots never change with this default. A
+                  legacy thread without a snapshot inherits it until that thread is next saved.
+                </p>
               </div>
 
               <div>

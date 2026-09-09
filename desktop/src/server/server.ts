@@ -13,6 +13,8 @@ import { stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { ApiError, ErrorType, asApiError, errInvalidJson, errMessagesRequired, errModelRequired, statusCodeForError, writeError } from '../providers/errors.js';
 import { SseWriter } from './sse.js';
+import { TaskRuntime, TaskRuntimeError } from '../agent/runtime.js';
+import type { AgentEvent, AgentTaskRequest, ApprovalDecision, DesktopHttpHandler, WorkspaceSnapshot } from '../agent/types.js';
 import type { Router } from '../providers/router.js';
 import type { ChatCompletionRequest, Model } from '../providers/types.js';
 
@@ -25,6 +27,7 @@ const CONTENT_TYPES: Record<string, string> = {
   '.woff2': 'font/woff2',
   '.png': 'image/png',
 };
+const MAX_DESKTOP_BODY_BYTES = 64 * 1024 * 1024;
 
 export interface GatewayServerOptions {
   router: Router;
@@ -36,11 +39,25 @@ export interface GatewayServerOptions {
    * silently guessed at.
    */
   resolveModel?: (req: ChatCompletionRequest) => Promise<string>;
+  desktop?: {
+    runtime: TaskRuntime;
+    selectWorkspace(): Promise<WorkspaceSnapshot | undefined>;
+    handlers?: DesktopHttpHandler[];
+  };
 }
 
 export function createGatewayServer(options: GatewayServerOptions): Server {
   return createServer((req, res) => {
     void handle(req, res, options).catch((err) => {
+      if ((req.url ?? '').startsWith('/desktop/')) {
+        if (!res.headersSent) {
+          const status = err instanceof TaskRuntimeError ? err.status : 500;
+          sendJson(res, status, { error: { message: errorMessage(err) } });
+        } else {
+          res.end();
+        }
+        return;
+      }
       const apiErr = asApiError(err);
       if (!res.headersSent) writeError(res, apiErr, statusCodeForError(apiErr.type));
       else res.end();
@@ -76,6 +93,16 @@ async function handle(
     if (method !== 'POST') return methodNotAllowed(method, path, res);
     return handleChatCompletions(req, res, options);
   }
+  if (path.startsWith('/desktop/')) {
+    if (!isSameOriginDesktopRequest(req)) {
+      return sendJson(res, 403, { error: { message: 'cross-origin desktop control request denied' } });
+    }
+    if (!options.desktop) {
+      return sendJson(res, 503, { error: { message: 'desktop control surface is unavailable' } });
+    }
+    if (await handleDesktop(req, res, url, method, options.desktop)) return;
+    return sendJson(res, 404, { error: { message: `unknown path '${path}'` } });
+  }
 
   if (method === 'GET' && (path === '/' || path === '/favicon.svg' || path.startsWith('/assets/'))) {
     return serveStatic(path, res, options.webRoot);
@@ -96,6 +123,17 @@ function expectGet(
 
 function methodNotAllowed(method: string, path: string, res: ServerResponse): void {
   writeError(res, new ApiError(`method ${method} is not allowed for '${path}'`, ErrorType.InvalidRequest), 405);
+}
+
+function isSameOriginDesktopRequest(req: IncomingMessage): boolean {
+  if (req.headers['sec-fetch-site'] === 'cross-site') return false;
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
 }
 
 async function handleModels(res: ServerResponse, options: GatewayServerOptions): Promise<void> {
@@ -167,6 +205,162 @@ async function handleChatCompletions(
   }
 }
 
+async function handleDesktop(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  method: string,
+  desktop: NonNullable<GatewayServerOptions['desktop']>,
+): Promise<boolean> {
+  const path = url.pathname;
+  if (path === '/desktop/workspace/select') {
+    if (method !== 'POST') {
+      methodNotAllowed(method, path, res);
+      return true;
+    }
+    const workspace = await desktop.selectWorkspace();
+    if (!workspace) {
+      res.writeHead(204);
+      res.end();
+    } else {
+      sendJson(res, 200, workspace);
+    }
+    return true;
+  }
+
+  if (path === '/desktop/capabilities') {
+    if (method !== 'GET') {
+      methodNotAllowed(method, path, res);
+      return true;
+    }
+    sendJson(res, 200, { tools: desktop.runtime.capabilities() });
+    return true;
+  }
+
+  if (path === '/desktop/tasks') {
+    if (method !== 'POST') {
+      methodNotAllowed(method, path, res);
+      return true;
+    }
+    const body = await readJsonBody(req);
+    sendJson(res, 202, await desktop.runtime.dispatch(body as AgentTaskRequest));
+    return true;
+  }
+
+  const taskMatch = path.match(/^\/desktop\/tasks\/([^/]+)$/);
+  if (taskMatch) {
+    if (method !== 'GET') {
+      methodNotAllowed(method, path, res);
+      return true;
+    }
+    const task = desktop.runtime.get(decodeURIComponent(taskMatch[1]!));
+    if (!task) throw new TaskRuntimeError('task not found', 404);
+    sendJson(res, 200, task);
+    return true;
+  }
+
+  const eventsMatch = path.match(/^\/desktop\/tasks\/([^/]+)\/events$/);
+  if (eventsMatch) {
+    if (method !== 'GET') {
+      methodNotAllowed(method, path, res);
+      return true;
+    }
+    streamTaskEvents(req, res, desktop.runtime, decodeURIComponent(eventsMatch[1]!), url);
+    return true;
+  }
+
+  const approvalMatch = path.match(/^\/desktop\/tasks\/([^/]+)\/approvals\/([^/]+)$/);
+  if (approvalMatch) {
+    if (method !== 'POST') {
+      methodNotAllowed(method, path, res);
+      return true;
+    }
+    const body = await readJsonBody(req) as { decision?: unknown };
+    const task = await desktop.runtime.approve(
+      decodeURIComponent(approvalMatch[1]!),
+      decodeURIComponent(approvalMatch[2]!),
+      body.decision as ApprovalDecision,
+    );
+    sendJson(res, 200, task);
+    return true;
+  }
+
+  const actionMatch = path.match(/^\/desktop\/tasks\/([^/]+)\/(cancel|undo)$/);
+  if (actionMatch) {
+    if (method !== 'POST') {
+      methodNotAllowed(method, path, res);
+      return true;
+    }
+    const taskId = decodeURIComponent(actionMatch[1]!);
+    if (actionMatch[2] === 'cancel') {
+      sendJson(res, 200, await desktop.runtime.cancel(taskId));
+    } else {
+      const body = await readOptionalJsonBody(req) as { checkpointId?: string };
+      sendJson(res, 200, await desktop.runtime.undo(taskId, body.checkpointId));
+    }
+    return true;
+  }
+
+  for (const handler of desktop.handlers ?? []) {
+    if (await handler({ request: req, response: res, url })) return true;
+  }
+  return false;
+}
+
+function streamTaskEvents(
+  req: IncomingMessage,
+  res: ServerResponse,
+  runtime: TaskRuntime,
+  taskId: string,
+  url: URL,
+): void {
+  const headerId = Number(req.headers['last-event-id'] ?? 0);
+  const queryId = Number(url.searchParams.get('after') ?? 0);
+  const after = Number.isFinite(headerId) && headerId > 0
+    ? headerId
+    : (Number.isFinite(queryId) && queryId > 0 ? queryId : 0);
+  let closed = false;
+  let unsubscribe = (): void => {};
+  let heartbeat: NodeJS.Timeout | undefined;
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    unsubscribe();
+    res.end();
+  };
+  const write = (event: AgentEvent): void => {
+    if (closed) return;
+    res.write(`id: ${event.id}\nevent: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`);
+    if (event.kind === 'done' || event.kind === 'error') close();
+  };
+  if (!runtime.get(taskId)) throw new TaskRuntimeError('task not found', 404);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-store',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  const subscription = runtime.subscribe(taskId, after, write);
+  if (!subscription) {
+    close();
+    return;
+  }
+  unsubscribe = subscription.unsubscribe;
+  res.on('close', close);
+  for (const event of subscription.events) write(event);
+  if (closed) return;
+  if (subscription.state === 'completed' || subscription.state === 'failed' || subscription.state === 'cancelled') {
+    close();
+    return;
+  }
+  heartbeat = setInterval(() => {
+    if (!closed) res.write(': keep-alive\n\n');
+  }, 15_000);
+  heartbeat.unref();
+}
+
 async function serveStatic(path: string, res: ServerResponse, webRoot: string): Promise<void> {
   const relativePath = path === '/' ? 'index.html' : normalize(path).replace(/^(\.\.[/\\])+/, '').replace(/^\//, '');
   const file = join(webRoot, relativePath);
@@ -202,6 +396,39 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
 
 async function readRequestBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let size = 0;
+  for await (const value of req) {
+    const chunk = value as Buffer;
+    size += chunk.length;
+    if (size > MAX_DESKTOP_BODY_BYTES) throw new TaskRuntimeError('request body is too large', 413);
+    chunks.push(chunk);
+  }
   return Buffer.concat(chunks).toString('utf8');
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const raw = await readRequestBody(req);
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new TaskRuntimeError('request body must be valid JSON', 400);
+  }
+}
+
+async function readOptionalJsonBody(req: IncomingMessage): Promise<unknown> {
+  const raw = await readRequestBody(req);
+  if (!raw.trim()) return {};
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new TaskRuntimeError('request body must be valid JSON', 400);
+  }
+}
+
+function errorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [REDACTED]')
+    .replace(/\b(sk|key|token)-[A-Za-z0-9_-]{12,}\b/gi, '[REDACTED]')
+    .replace(/((?:api[_-]?key|token|password|secret|authorization|cookie)\s*[:=]\s*["']?)[^\s"',}]+/gi, '$1[REDACTED]');
 }

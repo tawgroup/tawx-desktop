@@ -1,144 +1,270 @@
-import { useEffect, useState } from 'react';
-import type { CoworkSection } from '../types';
-
-const builtInTools = [
-  ['read', 'Read files', 'Inspect files inside the selected project', 'Read only'],
-  ['write', 'Write files', 'Create and edit files inside the selected project', 'Ask each time'],
-  ['bash', 'Run bash', 'Execute commands with the selected project as working directory', 'Ask each time'],
-] as const;
-
-const extraTools = [
-  ['Browser', 'Navigate, inspect, and interact with websites', 'Runtime needed'],
-  ['Web search', 'Research current information with sources', 'Available'],
-  ['Apps & MCP', 'Connect mail, calendar, Slack, GitHub, and more', 'Runtime needed'],
-  ['Artifacts', 'Preview documents, code, tables, and reports', 'UI ready'],
-] as const;
-
-const skills = [
-  ['Researcher', 'Search, compare sources, and prepare a cited brief'],
-  ['Document creator', 'Turn notes into reports, memos, and polished drafts'],
-  ['Spreadsheet analyst', 'Inspect tables, calculate metrics, and explain results'],
-  ['Developer', 'Understand a repository, edit code, and run checks'],
-] as const;
+import { useEffect, useMemo, useState } from 'react';
+import type { CoworkSection, CoworkTask, TaskApproval } from '../types';
+import { useChats } from '../store/useChats';
+import { useToolCapabilities } from '../store/useToolCapabilities';
+import ApprovalRequestCard, {
+  type ApprovalDecision,
+  type ToolApprovalRequest,
+} from './cowork/ApprovalRequestCard';
+import AuditHistory from './cowork/AuditHistory';
+import IntegrationsPanel from './cowork/IntegrationsPanel';
+import SchedulesPanel from './cowork/SchedulesPanel';
+import SkillsPanel, { type SkillsPanelSelection } from './cowork/SkillsPanel';
+import ToolPermissionsPanel, { type TaskPolicy } from './cowork/ToolPermissionsPanel';
 
 export default function CoworkHub({ section }: { section: Exclude<CoworkSection, 'tasks'> }) {
-  const [enabled, setEnabled] = useState<string[]>([]);
-  const [toolAccess, setToolAccess] = useState<Record<string, boolean>>(() => {
-    const saved = localStorage.getItem('tawx-tool-access');
-    return saved ? JSON.parse(saved) as Record<string, boolean> : { read: true, write: false, bash: false };
-  });
-  const toggle = (name: string) => setEnabled((items) => items.includes(name) ? items.filter((item) => item !== name) : [...items, name]);
-
-  useEffect(() => localStorage.setItem('tawx-tool-access', JSON.stringify(toolAccess)), [toolAccess]);
-
-  if (section === 'schedules') {
-    return (
-      <Panel title="Schedules" description="Run approved tasks automatically. This is a frontend preview until the scheduler is connected.">
-        {[
-          ['Morning brief', 'Every weekday at 08:00', 'Research news and prepare a concise daily brief.'],
-          ['Weekly review', 'Friday at 16:00', 'Summarize completed work, open items, and next-week priorities.'],
-        ].map(([name, timing, prompt]) => (
-          <article key={name} className="flex gap-4 rounded-2xl border border-surface-200 p-4 dark:border-surface-800">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2"><h2 className="font-semibold">{name}</h2><span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] text-surface-500 dark:bg-surface-800">Mock</span></div>
-              <p className="mt-1 text-xs text-accent">{timing}</p>
-              <p className="mt-2 text-sm text-surface-500">{prompt}</p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={enabled.includes(name)}
-              onClick={() => toggle(name)}
-              className={`mt-1 h-6 w-11 rounded-full p-0.5 transition-colors ${enabled.includes(name) ? 'bg-accent' : 'bg-surface-200 dark:bg-surface-700'}`}
-            >
-              <span className={`block h-5 w-5 rounded-full bg-white shadow transition-transform ${enabled.includes(name) ? 'translate-x-5' : ''}`} />
-            </button>
-          </article>
-        ))}
-      </Panel>
-    );
-  }
-
-  if (section === 'tools') {
-    return (
-      <Panel title="Tools" description="Capabilities the agent can use while completing a task.">
-        <div className="rounded-2xl border border-surface-200 p-4 dark:border-surface-800">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div><h2 className="font-semibold">Project access</h2><p className="mt-1 text-sm text-surface-500">Tools are restricted to the folder selected in the sidebar.</p></div>
-            <select aria-label="Project permission profile" defaultValue="ask" className="input !w-auto">
-              <option value="plan">Plan only</option>
-              <option value="ask">Ask before changes</option>
-              <option value="trusted">Trusted project</option>
-            </select>
-          </div>
-        </div>
-        <div className="overflow-hidden rounded-2xl border border-surface-200 dark:border-surface-800">
-          {builtInTools.map(([key, name, description, policy]) => (
-            <div key={key} className="flex items-center gap-4 border-b border-surface-200 p-4 last:border-b-0 dark:border-surface-800">
-              <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h2 className="font-semibold">{name}</h2><span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] text-surface-500 dark:bg-surface-800">{policy}</span></div><p className="mt-1 text-sm text-surface-500">{description}</p></div>
-              <button
-                type="button"
-                role="switch"
-                aria-label={`Enable ${name}`}
-                aria-checked={toolAccess[key] ?? false}
-                onClick={() => setToolAccess((current) => ({ ...current, [key]: !current[key] }))}
-                className={`h-6 w-11 shrink-0 rounded-full p-0.5 transition-colors ${toolAccess[key] ? 'bg-accent' : 'bg-surface-200 dark:bg-surface-700'}`}
-              >
-                <span className={`block h-5 w-5 rounded-full bg-white shadow transition-transform ${toolAccess[key] ? 'translate-x-5' : ''}`} />
-              </button>
-            </div>
-          ))}
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {extraTools.map(([name, description, status]) => (
-            <article key={name} className="rounded-2xl border border-surface-200 p-4 dark:border-surface-800">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="font-semibold">{name}</h2>
-                <span className={`rounded-full px-2 py-0.5 text-[10px] ${status === 'Available' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-surface-100 text-surface-500 dark:bg-surface-800'}`}>{status}</span>
-              </div>
-              <p className="mt-2 text-sm leading-6 text-surface-500">{description}</p>
-            </article>
-          ))}
-        </div>
-        <ApprovalPreview />
-      </Panel>
-    );
-  }
-
-  return (
-    <Panel title="Skills" description="Reusable instructions that teach TAWX how to perform a type of work.">
-      {skills.map(([name, description]) => (
-        <article key={name} className="flex items-center gap-4 rounded-2xl border border-surface-200 p-4 dark:border-surface-800">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-100 text-accent dark:bg-surface-800">✦</div>
-          <div className="min-w-0 flex-1"><h2 className="font-semibold">{name}</h2><p className="mt-1 text-sm text-surface-500">{description}</p></div>
-          <button type="button" className="btn-ghost border border-surface-200 dark:border-surface-700">Preview</button>
-        </article>
-      ))}
-    </Panel>
-  );
+  if (section === 'schedules') return <SchedulesPanel />;
+  if (section === 'tools') return <ToolsHub />;
+  return <SkillsSurface />;
 }
 
-function Panel({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
+function SkillsSurface() {
+  const workspacePath = useChats((state) => state.workspace?.path);
+  const threadId = useChats((state) => state.activeChat?.id);
+  const setThreadEnabledSkills = useChats((state) => state.setThreadEnabledSkills);
+  const [selectionError, setSelectionError] = useState<string | null>(null);
+
+  const syncContextSelection = (selection: SkillsPanelSelection) => {
+    const current = useChats.getState().enabledSkillIds;
+    if (current.length === selection.enabledSkillIds.length
+      && current.every((id, index) => id === selection.enabledSkillIds[index])) return;
+    setSelectionError(null);
+    void setThreadEnabledSkills(selection.enabledSkillIds).catch((cause: unknown) => {
+      setSelectionError(messageOf(cause, 'Could not apply the skill selection to this conversation.'));
+    });
+  };
+
   return (
-    <div className="scrollbar-thin flex-1 overflow-y-auto px-5 py-8 sm:px-8">
-      <div className="mx-auto max-w-4xl">
-        <div className="mb-7 flex items-end justify-between gap-4">
-          <div><p className="text-xs font-medium text-accent">TAWX Desktop</p><h1 className="mt-1 text-3xl font-semibold tracking-tight">{title}</h1><p className="mt-2 max-w-2xl text-sm text-surface-500">{description}</p></div>
-          <span className="shrink-0 rounded-full border border-surface-200 px-3 py-1 text-xs text-surface-500 dark:border-surface-800">Frontend prototype</span>
+    <div className="flex min-h-0 flex-1 flex-col">
+      {selectionError && (
+        <div role="alert" className="m-3 mb-0 rounded-xl border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-600 dark:text-red-400">
+          {selectionError}
         </div>
-        <div className="space-y-3">{children}</div>
-      </div>
+      )}
+      <SkillsPanel
+        workspacePath={workspacePath}
+        threadId={threadId}
+        onEnabledSkillsChange={syncContextSelection}
+      />
     </div>
   );
 }
 
-function ApprovalPreview() {
+function ToolsHub() {
+  const [view, setView] = useState<'permissions' | 'integrations'>('permissions');
+  const workspacePath = useChats((state) => state.workspace?.path);
+
   return (
-    <div className="mt-5 rounded-2xl border border-amber-400/30 bg-amber-400/5 p-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-amber-500">Approval preview</p>
-      <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-        <div><p className="text-sm font-medium">Run command</p><code className="mt-1 block text-xs text-surface-500">npm run build</code></div>
-        <div className="flex gap-2"><button type="button" className="btn-ghost border border-surface-200 dark:border-surface-700">Deny</button><button type="button" className="btn-primary">Allow once</button></div>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <nav aria-label="Tools views" className="flex shrink-0 justify-center gap-1 border-b border-surface-200 px-4 py-2 dark:border-surface-800">
+        <ViewButton selected={view === 'permissions'} onClick={() => setView('permissions')}>
+          Permissions & audit
+        </ViewButton>
+        <ViewButton selected={view === 'integrations'} onClick={() => setView('integrations')}>
+          Integrations & artifacts
+        </ViewButton>
+      </nav>
+      {view === 'permissions' ? <ToolsSurface /> : <IntegrationsPanel workspacePath={workspacePath} />}
+    </div>
+  );
+}
+
+function ViewButton({ selected, onClick, children }: {
+  selected: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+        selected ? 'bg-accent text-white' : 'text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ToolsSurface() {
+  const activeChat = useChats((state) => state.activeChat);
+  const workspace = useChats((state) => state.workspace);
+  const policy = useChats((state) => state.policy);
+  const enabledTools = useChats((state) => state.enabledTools);
+  const activeTask = useChats((state) => state.activeTask);
+  const stateError = useChats((state) => state.error);
+  const setThreadPolicy = useChats((state) => state.setThreadPolicy);
+  const toggleThreadTool = useChats((state) => state.toggleThreadTool);
+  const selectWorkspace = useChats((state) => state.selectWorkspace);
+  const respondToApproval = useChats((state) => state.respondToApproval);
+  const clearError = useChats((state) => state.clearError);
+  const tools = useToolCapabilities((state) => state.tools);
+  const runtimeStatus = useToolCapabilities((state) => state.status);
+  const runtimeError = useToolCapabilities((state) => state.error);
+  const loadCapabilities = useToolCapabilities((state) => state.load);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const pendingApprovals = useMemo(
+    () => activeTask
+      ? activeTask.approvals
+        .filter((approval) => approval.status === 'pending')
+        .map((approval) => approvalRequest(activeTask, approval))
+      : [],
+    [activeTask],
+  );
+
+  useEffect(() => {
+    void loadCapabilities();
+  }, [loadCapabilities]);
+
+  const changePolicy = (nextPolicy: TaskPolicy) => {
+    setSettingsError(null);
+    void setThreadPolicy(nextPolicy).catch((cause: unknown) => {
+      setSettingsError(messageOf(cause, 'Could not save the task policy.'));
+    });
+  };
+
+  const toggleTool = (name: string) => {
+    setSettingsError(null);
+    void toggleThreadTool(name).catch((cause: unknown) => {
+      setSettingsError(messageOf(cause, 'Could not save the tool selection.'));
+    });
+  };
+
+  const decide = async (approvalId: string, decision: ApprovalDecision) => {
+    if (!activeTask) return;
+    clearError();
+    await respondToApproval(approvalId, decision, activeTask.id);
+  };
+
+  return (
+    <Panel title="Tools" description="Choose the capabilities and approval policy used by the next task in this conversation.">
+      {(settingsError || stateError) && (
+        <div role="alert" className="flex items-start justify-between gap-3 rounded-xl border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-600 dark:text-red-400">
+          <span>{settingsError ?? stateError}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setSettingsError(null);
+              if (stateError) clearError();
+            }}
+            className="shrink-0 font-medium hover:underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      <ToolPermissionsPanel
+        scopeLabel={activeChat ? `“${activeChat.title}”` : 'the new task draft'}
+        workspacePath={workspace?.path}
+        policy={policy}
+        enabledTools={enabledTools}
+        tools={tools}
+        runtimeStatus={runtimeStatus}
+        runtimeError={runtimeError}
+        onPolicyChange={changePolicy}
+        onToggleTool={toggleTool}
+        onRefreshCapabilities={() => void loadCapabilities(true)}
+        onSelectWorkspace={() => void selectWorkspace()}
+      />
+
+      <section className="space-y-3" aria-labelledby="pending-approvals-title">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 id="pending-approvals-title" className="font-semibold">Pending approvals</h2>
+            <p className="mt-1 text-sm text-surface-500">Review every tool request waiting on the active task.</p>
+          </div>
+          <span className="rounded-full bg-surface-100 px-2.5 py-1 text-xs text-surface-500 dark:bg-surface-800">
+            {pendingApprovals.length}
+          </span>
+        </div>
+        {pendingApprovals.length === 0 ? (
+          <p className="rounded-xl border border-surface-200 px-3 py-4 text-sm text-surface-500 dark:border-surface-800">
+            No tool requests are waiting for approval.
+          </p>
+        ) : pendingApprovals.map((approval) => (
+          <ApprovalRequestCard
+            key={approval.id}
+            approval={approval}
+            onDecision={(decision) => decide(approval.id, decision)}
+          />
+        ))}
+      </section>
+
+      <AuditHistory events={activeTask?.events ?? []} />
+    </Panel>
+  );
+}
+
+function approvalRequest(task: CoworkTask, approval: TaskApproval): ToolApprovalRequest {
+  const descriptor = findApprovalDescriptor(task, approval.id) ?? recordOf(approval.arguments);
+  const relatedDiffs = task.diffs.filter((diff) => diff.toolCallId === approval.toolCallId && diff.diff);
+  const recordedDiff = relatedDiffs.length > 0
+    ? relatedDiffs.map((diff) => `${diff.path}\n${diff.diff}`).join('\n\n')
+    : null;
+  const descriptorDiff = typeof descriptor?.diff === 'string' ? descriptor.diff : null;
+
+  return {
+    id: approval.id,
+    taskId: task.id,
+    toolName: approval.tool,
+    input: descriptor && 'input' in descriptor ? descriptor.input : approval.arguments,
+    risk: normalizeRisk(descriptor?.risk, approval.reason),
+    diff: descriptorDiff || recordedDiff,
+    requestedAt: approval.requestedAt,
+  };
+}
+
+function findApprovalDescriptor(task: CoworkTask, approvalId: string): Record<string, unknown> | null {
+  for (let index = task.events.length - 1; index >= 0; index -= 1) {
+    const event = task.events[index];
+    if (event.kind !== 'approval_required') continue;
+    const payload = recordOf(event.payload);
+    const descriptor = recordOf(payload?.descriptor);
+    if (payload?.approvalId === approvalId || payload?.id === approvalId || descriptor?.id === approvalId) {
+      return descriptor;
+    }
+  }
+  return null;
+}
+
+function normalizeRisk(value: unknown, fallback?: string): ToolApprovalRequest['risk'] {
+  if (typeof value === 'string') return value;
+  const risk = recordOf(value);
+  if (!risk) return fallback;
+  const reasons = Array.isArray(risk.reasons)
+    ? risk.reasons.filter((reason): reason is string => typeof reason === 'string')
+    : [];
+  return {
+    level: typeof risk.level === 'string' ? risk.level : 'Review',
+    summary: typeof risk.summary === 'string' ? risk.summary : fallback,
+    reasons,
+  };
+}
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null;
+}
+
+function messageOf(cause: unknown, fallback: string): string {
+  return cause instanceof Error ? cause.message : fallback;
+}
+
+function Panel({ title, description, children }: {
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="scrollbar-thin flex-1 overflow-y-auto px-5 py-8 sm:px-8">
+      <div className="mx-auto max-w-4xl">
+        <div className="mb-7">
+          <p className="text-xs font-medium text-accent">TAWX Desktop</p>
+          <h1 className="mt-1 text-3xl font-semibold tracking-tight">{title}</h1>
+          <p className="mt-2 max-w-2xl text-sm text-surface-500">{description}</p>
+        </div>
+        <div className="space-y-4">{children}</div>
       </div>
     </div>
   );

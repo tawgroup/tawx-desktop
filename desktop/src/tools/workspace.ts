@@ -7,7 +7,7 @@
  * prefixing, which `/tmp/projectevil` would defeat against `/tmp/project`.
  */
 
-import { realpath } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 export class WorkspaceError extends Error {
@@ -18,26 +18,27 @@ export class WorkspaceError extends Error {
 }
 
 export class Workspace {
+  /** Canonical project root. Tool paths and command cwd always use this path. */
   private root: string | null = null;
-  /** Cached realpath of root, so each tool call does not re-resolve it. */
-  private realRoot: string | null = null;
 
   async select(path: string): Promise<string> {
     const resolved = resolve(path);
     let real: string;
     try {
       real = await realpath(resolved);
-    } catch {
+      if (!(await stat(real)).isDirectory()) {
+        throw new WorkspaceError(`project folder is not a directory: ${path}`);
+      }
+    } catch (error) {
+      if (error instanceof WorkspaceError) throw error;
       throw new WorkspaceError(`project folder does not exist: ${path}`);
     }
-    this.root = resolved;
-    this.realRoot = real;
+    this.root = real;
     return real;
   }
 
   clear(): void {
     this.root = null;
-    this.realRoot = null;
   }
 
   get selected(): string | null {
@@ -50,15 +51,24 @@ export class Workspace {
    * checked against its nearest existing ancestor.
    */
   async resolveInside(candidate: string): Promise<string> {
-    if (!this.realRoot) throw new WorkspaceError('no project folder selected');
+    if (!this.root) throw new WorkspaceError('no project folder selected');
+    if (candidate.includes('\0')) throw new WorkspaceError('path contains a null byte');
 
-    const target = isAbsolute(candidate) ? candidate : resolve(this.realRoot, candidate);
-    const real = await realpathOfNearestExisting(target);
+    const target = isAbsolute(candidate) ? resolve(candidate) : resolve(this.root, candidate);
+    const canonical = await realpathOfNearestExisting(target);
 
-    if (!contains(this.realRoot, real)) {
+    if (!contains(this.root, canonical)) {
       throw new WorkspaceError(`path escapes the selected project folder: ${candidate}`);
     }
-    return target;
+    return canonical;
+  }
+
+  /** Returns a portable project-relative label after applying confinement. */
+  async relativePath(candidate: string): Promise<string> {
+    if (!this.root) throw new WorkspaceError('no project folder selected');
+    const resolved = await this.resolveInside(candidate);
+    const rel = relative(this.root, resolved);
+    return rel === '' ? '.' : rel.split(sep).join('/');
   }
 }
 

@@ -1,11 +1,18 @@
 import type {
+  ApprovalDecision,
   ChatCompletionMessage,
   CompletionResponse,
+  DesktopTaskRequest,
+  DesktopTaskSnapshot,
   ModelInfo,
   Provider,
   StreamDelta,
+  TaskEvent,
+  TaskEventKind,
   WebSearchEngine,
+  Workspace,
 } from '../types';
+import { redactUnknown } from './redaction.ts';
 
 export class ApiError extends Error {
   readonly status?: number;
@@ -209,4 +216,196 @@ export async function fetchCompletion({
     reasoning: data.choices?.[0]?.message?.reasoning,
     cost: data.usage?.cost,
   };
+}
+
+const TASK_EVENT_KINDS: Record<TaskEventKind, true> = {
+  status: true,
+  assistant_delta: true,
+  reasoning_delta: true,
+  todo: true,
+  tool_call: true,
+  approval_required: true,
+  tool_result: true,
+  file_diff: true,
+  artifact: true,
+  context: true,
+  usage: true,
+  done: true,
+  error: true,
+};
+
+async function desktopRequest<T>(
+  path: string,
+  init: RequestInit = {},
+  emptyValue?: T,
+): Promise<T> {
+  const res = await fetch(path, {
+    ...init,
+    headers: {
+      ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...init.headers,
+    },
+  });
+  if (!res.ok) throw new ApiError(await parseError(res), res.status);
+  if (res.status === 204) return emptyValue as T;
+  return res.json() as Promise<T>;
+}
+
+export async function selectDesktopWorkspace(signal?: AbortSignal): Promise<Workspace | null> {
+  return desktopRequest<Workspace | null>(
+    '/desktop/workspace/select',
+    { method: 'POST', signal },
+    null,
+  );
+}
+
+export async function createDesktopTask(
+  request: DesktopTaskRequest,
+  signal?: AbortSignal,
+): Promise<{ id: string }> {
+  return desktopRequest('/desktop/tasks', {
+    method: 'POST',
+    signal,
+    body: JSON.stringify(request),
+  });
+}
+
+export async function fetchDesktopTask(
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<DesktopTaskSnapshot> {
+  const snapshot = await desktopRequest<DesktopTaskSnapshot>(
+    `/desktop/tasks/${encodeURIComponent(taskId)}`,
+    { signal },
+  );
+  return normalizeDesktopTaskSnapshot(snapshot);
+}
+
+export async function cancelDesktopTask(
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<DesktopTaskSnapshot> {
+  const snapshot = await desktopRequest<DesktopTaskSnapshot>(
+    `/desktop/tasks/${encodeURIComponent(taskId)}/cancel`,
+    { method: 'POST', signal },
+  );
+  return normalizeDesktopTaskSnapshot(snapshot);
+}
+
+export async function approveDesktopTask(
+  taskId: string,
+  approvalId: string,
+  decision: ApprovalDecision,
+  signal?: AbortSignal,
+): Promise<DesktopTaskSnapshot> {
+  const snapshot = await desktopRequest<DesktopTaskSnapshot>(
+    `/desktop/tasks/${encodeURIComponent(taskId)}/approvals/${encodeURIComponent(approvalId)}`,
+    { method: 'POST', signal, body: JSON.stringify({ decision }) },
+  );
+  return normalizeDesktopTaskSnapshot(snapshot);
+}
+
+export async function undoDesktopTask(taskId: string, signal?: AbortSignal): Promise<void> {
+  await desktopRequest(
+    `/desktop/tasks/${encodeURIComponent(taskId)}/undo`,
+    { method: 'POST', signal },
+    undefined,
+  );
+}
+
+function normalizeDesktopTaskEvent(value: unknown, eventId = ''): TaskEvent | null {
+  if (!value || typeof value !== 'object') return null;
+  const event = value as Record<string, unknown>;
+  if (
+    typeof event.taskId !== 'string'
+    || typeof event.kind !== 'string'
+    || !TASK_EVENT_KINDS[event.kind as TaskEventKind]
+  ) {
+    return null;
+  }
+  const parsedTimestamp = typeof event.timestamp === 'number'
+    ? event.timestamp
+    : typeof event.timestamp === 'string'
+      ? Date.parse(event.timestamp)
+      : Number.NaN;
+  if (!Number.isFinite(parsedTimestamp) || event.payload === undefined) return null;
+  const id = typeof event.id === 'string' || typeof event.id === 'number'
+    ? String(event.id)
+    : eventId;
+  return {
+    id: id || `${event.taskId}:${parsedTimestamp}:${event.kind}`,
+    taskId: event.taskId,
+    kind: event.kind as TaskEventKind,
+    timestamp: parsedTimestamp,
+    payload: redactUnknown(event.payload) as TaskEvent['payload'],
+  };
+}
+
+function normalizeDesktopTaskSnapshot(snapshot: DesktopTaskSnapshot): DesktopTaskSnapshot {
+  return {
+    ...snapshot,
+    events: snapshot.events
+      ?.map((event) => normalizeDesktopTaskEvent(event))
+      .filter((event): event is TaskEvent => event !== null),
+  };
+}
+
+export function parseDesktopTaskEvent(data: string, eventId = ''): TaskEvent | null {
+  try {
+    return normalizeDesktopTaskEvent(JSON.parse(data), eventId);
+  } catch {
+    return null;
+  }
+}
+
+export interface DesktopTaskStreamOptions {
+  signal?: AbortSignal;
+  lastEventId?: string;
+  onEvent: (event: TaskEvent) => void | Promise<void>;
+}
+
+/** Streams inspectable desktop task events over authenticated same-origin SSE. */
+export async function streamDesktopTaskEvents(
+  taskId: string,
+  options: DesktopTaskStreamOptions,
+): Promise<void> {
+  const res = await fetch(`/desktop/tasks/${encodeURIComponent(taskId)}/events`, {
+    headers: {
+      Accept: 'text/event-stream',
+      ...(options.lastEventId ? { 'Last-Event-ID': options.lastEventId } : {}),
+    },
+    signal: options.signal,
+  });
+  if (!res.ok) throw new ApiError(await parseError(res), res.status);
+  if (!res.body) throw new ApiError('Task event stream is empty');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const consumeFrame = async (frame: string) => {
+    let eventId = '';
+    const data: string[] = [];
+    for (const line of frame.split(/\r?\n/)) {
+      if (line.startsWith('id:')) eventId = line.slice(3).trim();
+      if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+    }
+    if (data.length === 0) return;
+    const event = parseDesktopTaskEvent(data.join('\n'), eventId);
+    if (event) await options.onEvent(event);
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() ?? '';
+      for (const frame of frames) await consumeFrame(frame);
+      if (done) break;
+    }
+    if (buffer.trim()) await consumeFrame(buffer);
+  } finally {
+    reader.releaseLock();
+  }
 }

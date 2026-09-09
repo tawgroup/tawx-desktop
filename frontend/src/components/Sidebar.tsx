@@ -1,9 +1,26 @@
 import { useMemo, useState } from 'react';
 import { useChats } from '../store/useChats';
-import { chatMode, type Chat } from '../types';
+import { chatMode, type AppMode, type Chat, type CoworkSection, type TaskStatus } from '../types';
 import { cn, groupByDate } from '../lib/utils';
 import { IconChat, IconClose, IconEdit, IconLock, IconPlus, IconSettings, IconTrash } from './Icons';
-import type { AppMode, CoworkSection } from '../types';
+
+const taskStatusLabels: Record<TaskStatus, string> = {
+  planning: 'Planning',
+  running: 'Running',
+  waiting_approval: 'Approval',
+  completed: 'Completed',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+};
+
+const taskStatusStyles: Record<TaskStatus, string> = {
+  planning: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',
+  running: 'bg-accent/10 text-accent',
+  waiting_approval: 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
+  completed: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+  failed: 'bg-red-500/10 text-red-700 dark:text-red-300',
+  cancelled: 'bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-300',
+};
 
 interface Props {
   open: boolean;
@@ -71,7 +88,8 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
         <div className="safe-top flex items-center gap-2 p-3">
           <button
             onClick={() => {
-              newChat();
+              newChat(mode);
+              if (mode === 'cowork') onSelectSection('tasks');
               onClose();
             }}
             className="flex flex-1 items-center gap-2 rounded-lg px-3 py-2.5
@@ -79,7 +97,7 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
                        dark:hover:bg-surface-800"
           >
             <IconPlus className="h-4 w-4" />
-            New {mode === 'cowork' ? 'task' : mode === 'code' ? 'session' : 'chat'}
+            New {mode === 'chat' ? 'chat' : mode === 'code' ? 'code task' : 'task'}
           </button>
           <button
             onClick={onClose}
@@ -89,6 +107,15 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
             <IconClose className="h-5 w-5" />
           </button>
         </div>
+
+        {mode !== 'chat' && (
+          <div className="px-5 pb-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-400">{mode === 'code' ? 'Code' : 'Cowork'}</p>
+            <p className="mt-0.5 text-xs text-surface-500">
+              {mode === 'code' ? 'Workspace changes, checks, and diffs' : 'Delegated tasks and execution history'}
+            </p>
+          </div>
+        )}
 
         {mode === 'cowork' && (
           <div className="space-y-1 border-b border-surface-200 px-2 pb-3 dark:border-surface-800">
@@ -122,9 +149,9 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
         <nav className="scrollbar-thin flex-1 space-y-4 overflow-y-auto px-2 pb-2">
           {visibleChats.length === 0 && (
             <p className="px-3 py-8 text-center text-sm text-surface-400 dark:text-surface-600">
-              No {mode === 'cowork' ? 'tasks' : mode === 'code' ? 'code sessions' : 'chats'} yet.
+              No {mode === 'cowork' ? 'tasks' : mode === 'code' ? 'code tasks' : 'chats'} yet.
               <br />
-              Start a conversation.
+              {mode === 'chat' ? 'Start a conversation.' : mode === 'code' ? 'Describe a code change.' : 'Describe an outcome.'}
             </p>
           )}
 
@@ -146,7 +173,7 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
                           if (e.key === 'Enter') void commitRename(chat.id);
                           if (e.key === 'Escape') setEditingId(null);
                         }}
-                        aria-label="Chat title"
+                        aria-label={`Rename ${mode === 'chat' ? 'chat' : 'task'}`}
                         className="w-full rounded-lg bg-surface-100 px-3 py-2 text-sm outline-none
                                    ring-1 ring-surface-400 dark:bg-surface-800"
                       />
@@ -161,10 +188,24 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
                           onClick={() => void handleSelect(chat.id)}
                           className="flex min-w-0 flex-1 items-center gap-2 text-left"
                         >
-                          <IconChat className="h-4 w-4 shrink-0 opacity-50" />
+                          {mode === 'chat' ? (
+                            <IconChat className="h-4 w-4 shrink-0 opacity-50" />
+                          ) : (
+                            <span className="flex h-4 w-4 shrink-0 items-center justify-center text-xs font-semibold text-surface-400" aria-hidden>
+                              {mode === 'code' ? '</>' : '✦'}
+                            </span>
+                          )}
                           <span className="truncate">{chat.title}</span>
                         </button>
 
+                        {mode !== 'chat' && chat.taskStatus && (
+                          <span
+                            className={cn('shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium', taskStatusStyles[chat.taskStatus])}
+                            aria-label={`Task status: ${taskStatusLabels[chat.taskStatus]}`}
+                          >
+                            {taskStatusLabels[chat.taskStatus]}
+                          </span>
+                        )}
                         <span className="flex shrink-0 gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                           <button
                             onClick={() => {

@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import type { Message } from '../types';
 import { cn } from '../lib/utils';
+import AttachmentTray from './AttachmentTray';
 import { IconCheck, IconCopy } from './Icons';
 
 interface Props {
@@ -113,11 +114,16 @@ function MessageBubble({ message, isStreaming }: Props) {
       <div className="group w-full animate-fade-in">
         <div className="mx-auto flex max-w-3xl justify-end px-4 py-3 sm:px-6">
           <div className="flex min-w-0 flex-col items-end gap-1">
-            <div className="whitespace-pre-wrap break-words rounded-3xl rounded-tr-md
-                            bg-surface-100 px-4 py-2.5 text-[15px] leading-7
-                            dark:bg-surface-800">
-              {message.content}
-            </div>
+            {message.attachments && message.attachments.length > 0 && (
+              <AttachmentTray attachments={message.attachments} />
+            )}
+            {message.content && (
+              <div className="whitespace-pre-wrap break-words rounded-3xl rounded-tr-md
+                              bg-surface-100 px-4 py-2.5 text-[15px] leading-7
+                              dark:bg-surface-800">
+                {message.content}
+              </div>
+            )}
             {!isStreaming && message.content && (
               <div className="flex opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                 <CopyButton text={message.content} />

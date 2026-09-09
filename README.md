@@ -306,6 +306,22 @@ The Electron shell starts the gateway in-process and reads `~/tawx-desktop/confi
 start OMP or any authentication sidecar. On first launch it creates the config from the bundled
 template; set `providers.open_router.api_key` to an OpenRouter key before restarting the app.
 
+Cowork and Code threads can select a project folder with the native macOS picker. The canonical
+workspace path is persisted per thread, and Code mode works directly in that workspace. Agent tasks
+persist locally, resume after reopening the app, and expose their system prompt, context usage,
+reasoning, todo state, tool calls, results, and audit history.
+
+The agent runs tools iteratively rather than returning a one-shot preview. It can inspect and edit
+files, run commands, inspect Git state, show diffs, and undo checkpointed changes. Image and readable
+file attachments remain in the transcript, while the context inspector shows what is being sent and
+when compaction occurs. Skills, schedules, an isolated browser, MCP servers, and persistent artifacts
+are available from the Cowork control panels.
+
+Workspace containment and secret redaction apply to persisted tasks, events, audit records, and
+exports. Permission policy and the enabled-tool list are enforced on every task; command, Git,
+browser, MCP, and other external or mutating actions remain explicitly gated and surface approval
+requests in the thread.
+
 ```bash
 cd desktop
 npm install

@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import type { Provider, Settings } from '../types';
-import { DEFAULT_SETTINGS } from '../types';
-import { clearAll, loadSettings, saveSettings } from '../lib/db';
-import { uid } from '../lib/utils';
+import { DEFAULT_SETTINGS } from '../types.ts';
+import { clearAll, loadSettings, saveSettings } from '../lib/db.ts';
+import { uid } from '../lib/utils.ts';
 
 interface SettingsState {
   settings: Settings;
