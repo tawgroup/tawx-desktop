@@ -87,6 +87,7 @@ function createWindow(url: string): void {
     minWidth: 760,
     minHeight: 540,
     title: 'TAWX Desktop',
+    fullscreen: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   void window.loadURL(url);
