@@ -11,6 +11,13 @@ const taskStarters = [
   ['Plan a project', 'Break this project into a practical plan with milestones, risks, and next actions.'],
 ] as const;
 
+const codeStarters = [
+  ['Understand a repository', 'Inspect this project and explain its architecture and main execution flow.'],
+  ['Fix a bug', 'Help me diagnose and fix a bug in this project.'],
+  ['Build a feature', 'Help me implement a feature in this project with the smallest safe change.'],
+  ['Review code', 'Review this project for correctness, security, and unnecessary complexity.'],
+] as const;
+
 export default function ChatView({ mode }: { mode: AppMode }) {
   const messages = useChats((s) => s.messages);
   const streaming = useChats((s) => s.streaming);
@@ -44,23 +51,25 @@ export default function ChatView({ mode }: { mode: AppMode }) {
     !streaming && messages.length > 0 && messages[messages.length - 1].role === 'assistant';
 
   if (messages.length === 0) {
-    if (mode === 'cowork') {
+    if (mode !== 'chat') {
+      const code = mode === 'code';
+      const starters = code ? codeStarters : taskStarters;
       return (
         <div className="scrollbar-thin flex flex-1 items-center justify-center overflow-y-auto px-6 py-10">
           <div className="w-full max-w-2xl">
             <p className="mb-2 text-center text-sm font-medium text-accent">TAWX Desktop</p>
             <h1 className="text-center text-3xl font-semibold tracking-tight text-surface-800 dark:text-surface-100">
-              What do you want to get done?
+              {code ? 'What do you want to build?' : 'What do you want to get done?'}
             </h1>
             <p className="mx-auto mt-3 max-w-lg text-center text-sm leading-6 text-surface-500">
-              Describe the outcome. TAWX will help shape the work and produce a useful deliverable.
+              {code ? 'Choose a project and describe the change you want.' : 'Describe the outcome. TAWX will help shape the work and produce a useful deliverable.'}
             </p>
             <div className="mt-8 grid gap-3 sm:grid-cols-2">
-              {taskStarters.map(([title, prompt]) => (
+              {starters.map(([title, prompt]) => (
                 <button
                   key={title}
                   type="button"
-                  onClick={() => void send(prompt)}
+                  onClick={() => void send(prompt, undefined, mode)}
                   className="rounded-2xl border border-surface-200 bg-surface-50 p-4 text-left transition-colors
                              hover:border-surface-300 hover:bg-surface-100 dark:border-surface-800
                              dark:bg-surface-900 dark:hover:border-surface-700 dark:hover:bg-surface-800"
@@ -71,7 +80,7 @@ export default function ChatView({ mode }: { mode: AppMode }) {
               ))}
             </div>
             <div className="mt-5 grid grid-cols-4 overflow-hidden rounded-xl border border-surface-200 text-center text-[11px] text-surface-500 dark:border-surface-800">
-              {['Plan', 'Use tools', 'Ask approval', 'Deliver'].map((step, index) => (
+              {(code ? ['Inspect', 'Edit', 'Run checks', 'Deliver'] : ['Plan', 'Use tools', 'Ask approval', 'Deliver']).map((step, index) => (
                 <div key={step} className="border-r border-surface-200 px-2 py-2.5 last:border-r-0 dark:border-surface-800">
                   <span className="mr-1 text-accent">{index + 1}</span>{step}
                 </div>

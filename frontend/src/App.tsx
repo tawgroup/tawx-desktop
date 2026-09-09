@@ -8,7 +8,7 @@ import { useChats } from './store/useChats';
 import { useSettings } from './store/useSettings';
 import { applyTheme } from './store/useSettings';
 import { IconMenu, IconSettings } from './components/Icons';
-import type { AppMode, CoworkSection } from './types';
+import { chatMode, type AppMode, type CoworkSection } from './types';
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -26,6 +26,7 @@ export default function App() {
   const clearError = useChats((s) => s.clearError);
   const activeChatId = useChats((s) => s.activeChatId);
   const chats = useChats((s) => s.chats);
+  const selectChat = useChats((s) => s.selectChat);
 
   useEffect(() => {
     void hydrateSettings();
@@ -47,6 +48,11 @@ export default function App() {
   }, [theme]);
 
   const title = chats.find((c) => c.id === activeChatId)?.title ?? 'New chat';
+  const changeMode = (nextMode: AppMode) => {
+    setMode(nextMode);
+    if (nextMode === 'cowork') setCoworkSection('tasks');
+    void selectChat(chats.find((chat) => chatMode(chat) === nextMode)?.id ?? null);
+  };
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -80,16 +86,13 @@ export default function App() {
 
         <header className="flex h-12 shrink-0 items-center justify-center border-b border-surface-200 dark:border-surface-800 md:h-14">
           <div className="flex rounded-xl bg-surface-100 p-1 dark:bg-surface-900" role="tablist" aria-label="Workspace mode">
-            {(['chat', 'cowork'] as const).map((item) => (
+            {(['chat', 'cowork', 'code'] as const).map((item) => (
               <button
                 key={item}
                 type="button"
                 role="tab"
                 aria-selected={mode === item}
-                onClick={() => {
-                  setMode(item);
-                  if (item === 'cowork') setCoworkSection('tasks');
-                }}
+                onClick={() => changeMode(item)}
                 className={`rounded-lg px-4 py-1.5 text-sm font-medium capitalize transition-colors ${
                   mode === item
                     ? 'bg-white text-surface-900 shadow-sm dark:bg-surface-800 dark:text-white'

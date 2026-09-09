@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Chat, ChatCompletionMessage, Message } from '../types';
+import { chatMode, type AppMode, type Chat, type ChatCompletionMessage, type Message } from '../types';
 import * as db from '../lib/db';
 import { ApiError, fetchCompletion, streamCompletion } from '../lib/api';
 import { deriveTitle, uid } from '../lib/utils';
@@ -19,7 +19,7 @@ interface ChatState {
   newChat: () => void;
   removeChat: (chatId: string) => Promise<void>;
   renameChat: (chatId: string, title: string) => Promise<void>;
-  send: (text: string, context?: string) => Promise<void>;
+  send: (text: string, context?: string, mode?: AppMode) => Promise<void>;
   regenerate: () => Promise<void>;
   stop: () => void;
   clearError: () => void;
@@ -70,7 +70,7 @@ export const useChats = create<ChatState>((set, get) => ({
     set({ chats: get().chats.map((c) => (c.id === chatId ? updated : c)) });
   },
 
-  send: async (text, context) => {
+  send: async (text, context, mode = 'chat') => {
     const content = text.trim();
     if (!content || get().streaming) return;
 
@@ -82,6 +82,8 @@ export const useChats = create<ChatState>((set, get) => ({
 
     const now = Date.now();
     let chatId = get().activeChatId;
+    const activeChat = get().chats.find((chat) => chat.id === chatId);
+    if (activeChat && chatMode(activeChat) !== mode) chatId = null;
 
     // Materialise the chat lazily on first send.
     if (!chatId) {
@@ -89,6 +91,7 @@ export const useChats = create<ChatState>((set, get) => ({
       const chat: Chat = {
         id: chatId,
         title: deriveTitle(content),
+        mode,
         createdAt: now,
         updatedAt: now,
       };

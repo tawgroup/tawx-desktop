@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useChats } from '../store/useChats';
-import type { Chat } from '../types';
+import { chatMode, type Chat } from '../types';
 import { cn, groupByDate } from '../lib/utils';
 import { IconChat, IconClose, IconEdit, IconLock, IconPlus, IconSettings, IconTrash } from './Icons';
 import type { AppMode, CoworkSection } from '../types';
@@ -26,14 +26,16 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
   const [draft, setDraft] = useState('');
   const groups = useMemo(() => {
     const map = new Map<string, Chat[]>();
-    for (const chat of chats) {
+    for (const chat of chats.filter((chat) => chatMode(chat) === mode)) {
       const key = groupByDate(chat.updatedAt);
       const bucket = map.get(key);
       if (bucket) bucket.push(chat);
       else map.set(key, [chat]);
     }
     return [...map.entries()];
-  }, [chats]);
+  }, [chats, mode]);
+
+  const visibleChats = groups.flatMap(([, items]) => items);
 
   const commitRename = async (id: string) => {
     const title = draft.trim();
@@ -77,7 +79,7 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
                        dark:hover:bg-surface-800"
           >
             <IconPlus className="h-4 w-4" />
-            New {mode === 'cowork' ? 'task' : 'chat'}
+            New {mode === 'cowork' ? 'task' : mode === 'code' ? 'session' : 'chat'}
           </button>
           <button
             onClick={onClose}
@@ -118,9 +120,9 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
         )}
 
         <nav className="scrollbar-thin flex-1 space-y-4 overflow-y-auto px-2 pb-2">
-          {chats.length === 0 && (
+          {visibleChats.length === 0 && (
             <p className="px-3 py-8 text-center text-sm text-surface-400 dark:text-surface-600">
-              No chats yet.
+              No {mode === 'cowork' ? 'tasks' : mode === 'code' ? 'code sessions' : 'chats'} yet.
               <br />
               Start a conversation.
             </p>

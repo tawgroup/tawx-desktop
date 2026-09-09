@@ -77,7 +77,7 @@ export default function Composer({ mode }: { mode: AppMode }) {
     const value = text.trim();
     if (!value || streaming) return;
     setText('');
-    void send(value, mode === 'cowork' ? project?.context : undefined);
+    void send(value, mode === 'chat' ? undefined : project?.context, mode);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -119,7 +119,7 @@ export default function Composer({ mode }: { mode: AppMode }) {
               ))}
             </div>
           )}
-          {mode === 'cowork' && project && !project.hasOverview && (
+          {mode !== 'chat' && project && !project.hasOverview && (
             <p role="status" className="mb-2 rounded-lg bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
               No README or project manifest found. Choose the code repository root so the AI has enough evidence.
             </p>
@@ -130,7 +130,7 @@ export default function Composer({ mode }: { mode: AppMode }) {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder={hasProvider ? (mode === 'cowork' ? 'Describe the outcome you want…' : 'Send a message…') : 'Add a provider in Settings to start'}
+            placeholder={hasProvider ? (mode === 'chat' ? 'Send a message…' : mode === 'code' ? 'Describe what you want to build or fix…' : 'Describe the outcome you want…') : 'Add a provider in Settings to start'}
             disabled={!hasProvider}
             aria-label="Message input"
             className="scrollbar-thin max-h-[200px] w-full resize-none bg-transparent px-1 py-1.5
@@ -140,7 +140,7 @@ export default function Composer({ mode }: { mode: AppMode }) {
 
           <div className="mt-1 flex items-end justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1">
-              {mode === 'cowork' && (
+              {mode !== 'chat' && (
                 <>
                   <input
                     ref={(element) => {
@@ -266,7 +266,7 @@ export default function Composer({ mode }: { mode: AppMode }) {
                 </select>
               )}
 
-              {mode === 'cowork' && (
+              {mode !== 'chat' && (
                 <select
                   aria-label="Action approval mode"
                   className="max-w-36 rounded-full border border-surface-200 bg-transparent px-2 py-1.5 text-xs outline-none dark:border-surface-700"

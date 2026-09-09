@@ -1,5 +1,5 @@
 export type Role = 'system' | 'user' | 'assistant';
-export type AppMode = 'chat' | 'cowork';
+export type AppMode = 'chat' | 'cowork' | 'code';
 export type CoworkSection = 'tasks' | 'schedules' | 'tools' | 'skills';
 
 export interface Message {
@@ -22,10 +22,14 @@ export interface Chat {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** Missing on legacy conversations, which belong to Chat. */
+  mode?: AppMode;
   /** Per-chat override; falls back to global settings when undefined. */
   model?: string;
   systemPrompt?: string;
 }
+
+export const chatMode = (chat: Chat): AppMode => chat.mode ?? 'chat';
 
 export interface Provider {
   id: string;
