@@ -7,6 +7,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { parse as parseYaml } from 'yaml';
+import { expandRoutingEnv, routingConfigFromYaml, type RoutingConfig } from '../routing/config.js';
 
 export interface OpenAiConfig {
   api_key?: string;
@@ -44,16 +45,22 @@ export interface MetricsConfig {
 export interface GatewayConfig {
   listen: string;
   providers?: ProvidersConfig;
-  /** Bound by the routing package; kept opaque here. */
-  routing?: unknown;
+  routing?: RoutingConfig;
   metrics?: MetricsConfig;
 }
 
 export const DEFAULT_LISTEN = '127.0.0.1:18080';
 
 export async function loadConfig(path: string): Promise<GatewayConfig> {
-  const raw = parseYaml(await readFile(path, 'utf8')) as Partial<GatewayConfig> | null;
-  const config: GatewayConfig = { listen: DEFAULT_LISTEN, ...(raw ?? {}) };
+  const raw = (parseYaml(await readFile(path, 'utf8')) ?? {}) as Record<string, unknown>;
+  const config: GatewayConfig = { listen: DEFAULT_LISTEN, ...(raw as Partial<GatewayConfig>) };
+
+  // the routing block has its own binder and its own ${VAR} rules; hand it over
+  // rather than letting the loose spread above leave raw YAML in place
+  if (raw.routing) {
+    config.routing = routingConfigFromYaml(raw.routing);
+    expandRoutingEnv(config.routing);
+  }
 
   expandConfigEnv(config);
   normalize(config);
