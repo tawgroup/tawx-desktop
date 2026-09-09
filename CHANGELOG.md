@@ -6,6 +6,8 @@ FEATURE: The macOS desktop app now provides persistent Cowork and Code agents wi
 
 FEATURE: Chat response footers now show input and output token counts alongside the request cost.
 
+FIX: Links in desktop chat responses now open in the system browser instead of creating an embedded Electron popup.
+
 ## v0.1.7
 
 FEATURE: Virtual API keys can now be composed from boot-resident config keys, reloadable strict-YAML files, and a versioned HTTP key API. Sources refresh without restarting, converge through polling plus optional file watches and Unix `SIGHUP`, hold last-known-good on reload failure, and support optional fail-closed exclusion through `max_staleness`. The resident store keeps only SHA-256 digests, source records may publish `key_sha256` and exact-boundary `expires_at`, HTTP refreshes support ETag/conditional `304`, and four OpenTelemetry instruments expose refresh results, freshness, exclusion, and resident cardinality. See [docs/current/key-sources.md](docs/current/key-sources.md).

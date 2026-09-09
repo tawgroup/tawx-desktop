@@ -4,7 +4,7 @@
  * build, and no health-check race against a child process.
  */
 
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import type { Server } from 'node:http';
 import { basename, join } from 'node:path';
 import { AuditLog } from './agent/audit.js';
@@ -26,6 +26,7 @@ import { createSemanticRouter, type RequestInfo } from './routing/routing.js';
 import { createSchedulerHttpHandler, SchedulerRuntime } from './scheduler/index.js';
 import { createGatewayServer } from './server/server.js';
 import { createSkillsRuntime, type SkillsRuntime } from './skills/index.js';
+import { installExternalNavigation } from './navigation.js';
 import { Workspace } from './tools/workspace.js';
 
 let server: Server | undefined;
@@ -199,6 +200,7 @@ function createWindow(url: string): void {
     title: 'TAWX Desktop',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
+  installExternalNavigation(window.webContents, url, (externalUrl) => shell.openExternal(externalUrl));
   window.maximize();
   void window.loadURL(url);
 }
