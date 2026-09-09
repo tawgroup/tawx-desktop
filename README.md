@@ -300,26 +300,19 @@ routing:
 
 The classifier model and instruction are both settings. Change `classifier.model` to use another model and `classifier.prompt` to tune the routing policy without editing code.
 
-### Reuse OMP models and credentials
-
-The launcher creates and reads `~/tawx-desktop/config.yaml`, points the gateway at OMP's local auth gateway, and loads the OpenRouter key from OMP's credential vault at runtime. No secret is committed to this repository. Routes use OMP roles as follows: `default` for fast/general, `main` for coding/creative, `slow` for reasoning, and `smol` for classification.
-
-```bash
-./scripts/run-with-omp
-```
-
-Then open `http://127.0.0.1:18080/`, or point an OpenAI-compatible client at `http://127.0.0.1:18080/v1` and select `auto`. Edit `~/tawx-desktop/config.yaml` to change routing policy; change model roles through OMP.
-
 ### macOS desktop app
 
-The Electron shell reuses the same UI and starts/stops the bundled gateway automatically. OMP must already be installed and signed in.
+The Electron shell starts the gateway in-process and reads `~/tawx-desktop/config.yaml`. It does not
+start OMP or any authentication sidecar. On first launch it creates the config from the bundled
+template; set `providers.open_router.api_key` to an OpenRouter key before restarting the app.
 
 ```bash
 cd desktop
 npm install
-npm run dist:mac
-open "dist/mac-arm64/TAWX Desktop.app"
+npm run dev
 ```
+
+Build the packaged app with `npm run dist:mac`.
 
 ### Heuristic Match Conditions
 

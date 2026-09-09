@@ -6,8 +6,7 @@
  * references in routing.classifier.model and routing.routes[*].model once at load
  * (gateway/config.go's expandEnv). This module reproduces both: routingConfigFromYaml
  * converts the parsed `routing:` YAML node into a RoutingConfig, and expandRoutingEnv
- * applies the same env-expansion rule. etc/config.omp.yaml relies on both — see its
- * `routing.classifier.model: "${OMP_ROUTER_CLASSIFIER_MODEL}"` and route model fields.
+ * applies the same env-expansion rule to model fields.
  */
 
 import { readFileSync } from 'node:fs';
@@ -79,7 +78,7 @@ export interface SemanticConfig {
 /** Configures LLM-based classification. */
 export interface ClassifierConfig {
   enabled: boolean;
-  /** 'local' or 'openai' */
+  /** 'local' or 'open_router' */
   provider?: string;
   model: string;
   /** optional instruction prepended to the generated categories */

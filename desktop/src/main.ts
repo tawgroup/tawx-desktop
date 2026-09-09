@@ -8,7 +8,7 @@ import { app, BrowserWindow, dialog } from 'electron';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
 import { loadConfig } from './config/config.js';
-import { ensureConfig, startOmp, type OmpSession } from './config/omp.js';
+import { ensureConfig } from './config/user.js';
 import { buildProviders } from './providers/factory.js';
 import { createSemanticRouter, type RequestInfo } from './routing/routing.js';
 import { createGatewayServer } from './server/server.js';
@@ -18,33 +18,27 @@ import { getContentString } from './providers/types.js';
 import type { ChatCompletionRequest } from './providers/types.js';
 
 let server: Server | undefined;
-let omp: OmpSession | undefined;
 
 const resourceRoot = () => (app.isPackaged ? process.resourcesPath : join(__dirname, '..', '..'));
 
 async function start(): Promise<string> {
-  omp = await startOmp();
-
-  // the config's ${OMP_*} placeholders are resolved from the environment, so
-  // the values OMP just handed us have to land there before it is parsed
-  Object.assign(process.env, omp.roleModels, {
-    OMP_AUTH_GATEWAY_URL: omp.authGatewayUrl,
-    OPENROUTER_API_KEY: omp.openRouterApiKey,
-  });
-
-  const configPath = await ensureConfig(join(resourceRoot(), 'etc', 'config.omp.yaml'));
+  const configPath = await ensureConfig(join(resourceRoot(), 'etc', 'config.desktop.yaml'));
   const config = await loadConfig(configPath);
   const { router } = buildProviders(config);
 
   const workspace = new Workspace();
   const toolbox = new Toolbox(workspace);
   void toolbox; // wired to the UI in the next step
+  const classifierUsesOpenRouter = config.routing?.classifier?.provider === 'open_router';
 
   // the UI sends `auto` by default, so without this the gateway would reject
   // every request the app itself makes
   const semanticRouter = config.routing
     ? createSemanticRouter(config.routing, {
-        classifierBaseUrl: config.providers?.local?.base_url ?? '',
+        classifierBaseUrl: classifierUsesOpenRouter
+          ? (config.providers?.open_router?.base_url ?? '')
+          : (config.providers?.local?.base_url ?? ''),
+        classifierApiKey: classifierUsesOpenRouter ? (config.providers?.open_router?.api_key ?? '') : '',
       })
     : undefined;
 
@@ -113,5 +107,4 @@ void app.whenReady().then(async () => {
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => {
   server?.close();
-  omp?.stop();
 });

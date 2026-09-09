@@ -7,8 +7,7 @@
   "main": "dist/main.js",
   "scripts": {
     "dev": "npm run build && electron .",
-    "build:gateway": "mkdir -p gateway-bin && go build -o gateway-bin/tawx-desktop ../cmd/llm-gateway",
-    "dist:mac": "npm run build:gateway && electron-builder --mac dir --arm64",
+    "dist:mac": "electron-builder --mac dir --arm64",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test \"dist/**/*.test.js\""
@@ -27,16 +26,8 @@
     ],
     "extraResources": [
       {
-        "from": "gateway-bin/tawx-desktop",
-        "to": "tawx-desktop"
-      },
-      {
-        "from": "../scripts/run-with-omp",
-        "to": "scripts/run-with-omp"
-      },
-      {
-        "from": "../etc/config.omp.yaml",
-        "to": "etc/config.omp.yaml"
+        "from": "../etc/config.desktop.yaml",
+        "to": "etc/config.desktop.yaml"
       }
     ],
     "mac": {

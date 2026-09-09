@@ -3,8 +3,8 @@
  *
  * The embedding/semantic-similarity layer (routing/embeddings.go,
  * embedClient.go, vector.go) is deliberately not ported yet: the live desktop
- * config (etc/config.omp.yaml) never sets routing.semantic.enabled, so that
- * layer is off the live path. SemanticMatcher below is the narrow seam
+ * config never sets routing.semantic.enabled, so that layer is off the live
+ * path. SemanticMatcher below is the narrow seam
  * routing.go's cascade needs from it — createSemanticRouter never builds one
  * from an Embedder (that requires embeddings.go's centroid/cosine matching
  * over embedded exemplars), but a caller may inject an already-built
