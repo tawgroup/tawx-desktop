@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maintain Skill Library"
+  short_description: "Safely add, verify, and update skill packages"
+  default_prompt: "Use $maintain-skill-library to add or update skills in this repository safely."
