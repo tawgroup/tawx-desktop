@@ -158,9 +158,9 @@ function MessageBubble({ message, isStreaming }: Props) {
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex items-center gap-2">
             <span className="text-sm font-semibold">Assistant</span>
-            {message.model && (
+            {(message.providerName || message.model) && (
               <span className="truncate text-xs text-surface-700/50 dark:text-surface-200/40">
-                {message.model}
+                {[message.providerName, message.model].filter(Boolean).join(' · ')}
               </span>
             )}
           </div>

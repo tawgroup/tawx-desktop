@@ -1145,6 +1145,7 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
     content: '',
     createdAt: Date.now(),
     model,
+    providerName: provider.name,
   };
   set({
     activeChat: updatedChat,

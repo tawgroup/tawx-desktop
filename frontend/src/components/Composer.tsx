@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchModels } from '../lib/api';
 import { ATTACHMENT_ACCEPT, prepareAttachments } from '../lib/attachments';
-import { filterModels } from '../lib/models';
+import { isProviderRoutable, modelRoutes } from '../lib/providers.ts';
 import { useChats } from '../store/useChats';
 import { useSettings } from '../store/useSettings';
 import type { AppMode, ThreadPolicy } from '../types';
@@ -14,7 +14,6 @@ export default function Composer({ mode }: { mode: AppMode }) {
   const [text, setText] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [models, setModels] = useState<string[]>([]);
   const [modelSource, setModelSource] = useState('');
   const [modelError, setModelError] = useState('');
   const [attachmentErrors, setAttachmentErrors] = useState<string[]>([]);
@@ -38,12 +37,20 @@ export default function Composer({ mode }: { mode: AppMode }) {
   const setThreadPolicy = useChats((s) => s.setThreadPolicy);
   const settings = useSettings((s) => s.settings);
   const updateProvider = useSettings((s) => s.updateProvider);
+  const setActiveProvider = useSettings((s) => s.setActiveProvider);
   const sendOnEnter = settings.sendOnEnter;
-  const provider = settings.providers.find((p) => p.id === settings.activeProviderId) ?? null;
+  const provider = settings.providers.find((item) => item.id === settings.activeProviderId && isProviderRoutable(item))
+    ?? settings.providers.find(isProviderRoutable)
+    ?? null;
   const providerSource = provider ? `${provider.id}\0${provider.baseUrl}\0${provider.apiKey}` : '';
+  const routes = modelRoutes(settings.providers);
+  const filteredRoutes = routes.filter((route) => {
+    const needle = query.trim().toLowerCase();
+    return !needle || `${route.providerName} ${route.model}`.toLowerCase().includes(needle);
+  });
   const hasProvider = provider !== null;
   const canCompose = mode !== 'chat' || hasProvider;
-  const webSupported = provider?.model.startsWith('openrouter/') ?? false;
+  const webSupported = provider?.kind === 'openrouter' || (provider?.model.startsWith('openrouter/') ?? false);
 
   // Grow with content up to a cap, then scroll internally.
   useEffect(() => {
@@ -73,15 +80,20 @@ export default function Composer({ mode }: { mode: AppMode }) {
     const controller = new AbortController();
     setModelError('');
     void fetchModels(provider, controller.signal)
-      .then((items) => {
-        setModels(items.map((item) => item.id));
+      .then(async (items) => {
+        const discoveredModels = items.map((item) => item.id);
         setModelSource(providerSource);
+        await updateProvider(provider.id, {
+          discoveredModels,
+          connectionStatus: 'connected',
+          lastCheckedAt: Date.now(),
+          lastError: undefined,
+        });
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) setModelError(error instanceof Error ? error.message : 'Could not load models');
       });
-    return () => controller.abort();
-  }, [pickerOpen, provider, providerSource, modelSource]);
+  }, [pickerOpen, provider, providerSource, modelSource, updateProvider]);
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -143,9 +155,9 @@ export default function Composer({ mode }: { mode: AppMode }) {
     }
   };
 
-  const chooseModel = async (model: string) => {
-    if (!provider) return;
-    await updateProvider(provider.id, { model });
+  const chooseModel = async (providerId: string, model: string) => {
+    await setActiveProvider(providerId);
+    await updateProvider(providerId, { model });
     setPickerOpen(false);
     setQuery('');
     ref.current?.focus();
@@ -244,7 +256,7 @@ export default function Composer({ mode }: { mode: AppMode }) {
                              text-surface-600 transition-colors hover:bg-surface-100 disabled:opacity-40
                              dark:text-surface-300 dark:hover:bg-surface-800"
                 >
-                  <span className="truncate">{provider?.model ?? 'Choose model'}</span>
+                  <span className="truncate">{provider ? `${provider.name} · ${provider.model}` : 'Choose model'}</span>
                   <span aria-hidden>⌄</span>
                 </button>
 
@@ -263,21 +275,26 @@ export default function Composer({ mode }: { mode: AppMode }) {
                     />
                   </div>
                   <div role="listbox" aria-label="Models" className="scrollbar-thin max-h-72 overflow-y-auto p-1.5">
-                    {filterModels(models, query).map((model) => (
-                      <button
-                        key={model}
-                        type="button"
-                        role="option"
-                        aria-selected={provider.model === model}
-                        onClick={() => void chooseModel(model)}
-                        className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm
-                                   hover:bg-surface-100 dark:hover:bg-surface-700"
-                      >
-                        <span className="truncate">{model}</span>
-                        {provider.model === model && <span className="text-accent">✓</span>}
-                      </button>
-                    ))}
-                    {!models.length && !modelError && <p className="px-3 py-5 text-center text-sm text-surface-400">Loading models…</p>}
+                    {filteredRoutes.map((route) => {
+                      const selected = provider.id === route.providerId && provider.model === route.model;
+                      return (
+                        <button
+                          key={route.key}
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          onClick={() => void chooseModel(route.providerId, route.model)}
+                          className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-surface-100 dark:hover:bg-surface-700"
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate">{route.model}</span>
+                            <span className="block truncate text-[11px] text-surface-500">via {route.providerName}</span>
+                          </span>
+                          {selected && <span className="text-accent">✓</span>}
+                        </button>
+                      );
+                    })}
+                    {!filteredRoutes.length && !modelError && <p className="px-3 py-5 text-center text-sm text-surface-400">No matching models.</p>}
                     {modelError && <p role="alert" className="px-3 py-3 text-sm text-red-500">{modelError}</p>}
                   </div>
                   </div>

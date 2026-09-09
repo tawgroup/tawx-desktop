@@ -84,7 +84,7 @@ func TestMiddlewarePassthroughAndAuthentication(t *testing.T) {
 	})
 	handler := store.Middleware(inner)
 
-	for _, path := range []string{"/", "/health", "/metrics", "/favicon.svg", "/assets/app.js"} {
+	for _, path := range []string{"/", "/health", "/metrics", "/favicon.svg", "/assets/app.js", "/proxy/remote"} {
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
 		if rr.Code != http.StatusOK {

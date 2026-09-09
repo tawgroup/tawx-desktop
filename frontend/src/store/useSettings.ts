@@ -3,6 +3,7 @@ import type { Provider, Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../types.ts';
 import { clearAll, loadSettings, saveSettings } from '../lib/db.ts';
 import { uid } from '../lib/utils.ts';
+import { isProviderRoutable } from '../lib/providers.ts';
 
 interface SettingsState {
   settings: Settings;
@@ -40,8 +41,8 @@ export const useSettings = create<SettingsState>((set, get) => ({
     const next: Settings = {
       ...settings,
       providers: [...settings.providers, { ...provider, id }],
-      // First provider added becomes active automatically.
-      activeProviderId: settings.activeProviderId ?? id,
+      // First enabled provider added becomes active automatically.
+      activeProviderId: settings.activeProviderId || (isProviderRoutable({ ...provider, id }) ? id : ''),
     };
     set({ settings: next });
     await saveSettings(next);
@@ -50,36 +51,45 @@ export const useSettings = create<SettingsState>((set, get) => ({
 
   updateProvider: async (id, patch) => {
     const { settings } = get();
-    const next: Settings = {
-      ...settings,
-      providers: settings.providers.map((p) => (p.id === id ? { ...p, ...patch } : p)),
-    };
+    const providers = settings.providers.map((provider) => (
+      provider.id === id ? { ...provider, ...patch } : provider
+    ));
+    const activeProviderId = settings.activeProviderId === id && !isProviderRoutable(providers.find((provider) => provider.id === id)!)
+      ? (providers.find(isProviderRoutable)?.id ?? '')
+      : settings.activeProviderId;
+    const next: Settings = { ...settings, providers, activeProviderId };
     set({ settings: next });
     await saveSettings(next);
   },
 
   removeProvider: async (id) => {
     const { settings } = get();
-    const providers = settings.providers.filter((p) => p.id !== id);
+    const providers = settings.providers.filter((provider) => provider.id !== id);
     const next: Settings = {
       ...settings,
       providers,
-      activeProviderId:
-        settings.activeProviderId === id ? (providers[0]?.id ?? null) : settings.activeProviderId,
+      activeProviderId: settings.activeProviderId === id
+        ? (providers.find(isProviderRoutable)?.id ?? '')
+        : settings.activeProviderId,
     };
     set({ settings: next });
     await saveSettings(next);
   },
 
   setActiveProvider: async (id) => {
-    const next = { ...get().settings, activeProviderId: id };
+    const { settings } = get();
+    const provider = settings.providers.find((candidate) => candidate.id === id);
+    if (id && (!provider || !isProviderRoutable(provider))) return;
+    const next = { ...settings, activeProviderId: id };
     set({ settings: next });
     await saveSettings(next);
   },
 
   activeProvider: () => {
     const { providers, activeProviderId } = get().settings;
-    return providers.find((p) => p.id === activeProviderId) ?? null;
+    return providers.find((provider) => provider.id === activeProviderId && isProviderRoutable(provider))
+      ?? providers.find(isProviderRoutable)
+      ?? null;
   },
 
   wipe: async () => {

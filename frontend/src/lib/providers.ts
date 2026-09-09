@@ -1,0 +1,91 @@
+import type { Provider, ProviderAuthKind, ProviderKind } from '../types.ts';
+
+export interface ProviderPreset {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  baseUrl: string;
+  authKind: ProviderAuthKind;
+  model: string;
+}
+
+export interface ModelRoute {
+  key: string;
+  providerId: string;
+  providerName: string;
+  model: string;
+}
+
+export const PROVIDER_PRESETS: ProviderPreset[] = [
+  { id: 'openrouter', name: 'OpenRouter', kind: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', authKind: 'bearer', model: 'openai/gpt-4o-mini' },
+  { id: 'openai', name: 'OpenAI', kind: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', authKind: 'bearer', model: 'gpt-4o-mini' },
+  { id: 'deepseek', name: 'DeepSeek', kind: 'openai-compatible', baseUrl: 'https://api.deepseek.com/v1', authKind: 'bearer', model: 'deepseek-chat' },
+  { id: 'groq', name: 'Groq', kind: 'openai-compatible', baseUrl: 'https://api.groq.com/openai/v1', authKind: 'bearer', model: 'llama-3.3-70b-versatile' },
+  { id: 'together', name: 'Together AI', kind: 'openai-compatible', baseUrl: 'https://api.together.xyz/v1', authKind: 'bearer', model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo' },
+  { id: 'ollama', name: 'Ollama', kind: 'ollama', baseUrl: 'http://localhost:11434/v1', authKind: 'none', model: 'llama3.2' },
+  { id: 'lm-studio', name: 'LM Studio', kind: 'openai-compatible', baseUrl: 'http://localhost:1234/v1', authKind: 'none', model: 'local-model' },
+];
+
+function inferKind(baseUrl: string, id: string): ProviderKind {
+  if (id === 'gateway' || baseUrl.startsWith('/')) return 'gateway';
+  if (baseUrl.includes('openrouter.ai')) return 'openrouter';
+  if (baseUrl.includes('localhost:11434') || baseUrl.includes('127.0.0.1:11434')) return 'ollama';
+  return 'openai-compatible';
+}
+
+export function normalizeProvider(provider: Partial<Provider> & Pick<Provider, 'id' | 'name' | 'baseUrl' | 'apiKey' | 'model'>): Provider {
+  const kind = provider.kind ?? inferKind(provider.baseUrl, provider.id);
+  const discoveredModels = Array.from(new Set([...(provider.discoveredModels ?? []), provider.model].filter(Boolean)));
+  return {
+    ...provider,
+    kind,
+    authKind: provider.authKind ?? (kind === 'gateway' || kind === 'ollama' || !provider.apiKey ? 'none' : 'bearer'),
+    enabled: provider.enabled ?? true,
+    discoveredModels,
+    connectionStatus: provider.connectionStatus ?? (kind === 'gateway' ? 'connected' : 'untested'),
+  };
+}
+
+export function isProviderRoutable(provider: Provider): boolean {
+  return provider.enabled && (provider.authKind === 'none' || provider.apiKey.trim().length > 0);
+}
+
+export function validateProviderBaseUrl(baseUrl: string): string | null {
+  const value = baseUrl.trim();
+  if (value.startsWith('/')) return null;
+  try {
+    const url = new URL(value);
+    const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
+    if (url.protocol === 'https:' || (url.protocol === 'http:' && loopback)) return null;
+    return 'Use HTTPS for remote providers. HTTP is allowed only for localhost.';
+  } catch {
+    return 'Enter a valid provider URL.';
+  }
+}
+
+export function normalizeProviders(providers: Provider[]): Provider[] {
+  return providers.map(normalizeProvider);
+}
+
+export function modelRoutes(providers: Provider[]): ModelRoute[] {
+  return providers
+    .filter(isProviderRoutable)
+    .flatMap((provider) => {
+      const models = Array.from(new Set([provider.model, ...provider.discoveredModels].filter(Boolean)));
+      return models.map((model) => ({
+        key: `${provider.id}:${model}`,
+        providerId: provider.id,
+        providerName: provider.name,
+        model,
+      }));
+    });
+}
+
+export function providerKindLabel(kind: ProviderKind): string {
+  switch (kind) {
+    case 'gateway': return 'Managed gateway';
+    case 'openrouter': return 'OpenRouter';
+    case 'ollama': return 'Ollama';
+    default: return 'OpenAI-compatible';
+  }
+}

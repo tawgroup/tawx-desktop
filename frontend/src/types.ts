@@ -51,6 +51,7 @@ export interface Message {
   /** Populated when the assistant turn failed; renders inline as an error bubble. */
   error?: string;
   model?: string;
+  providerName?: string;
   reasoning?: string;
   cost?: number;
   inputTokens?: number;
@@ -88,13 +89,24 @@ export interface ThreadDraft {
 
 export const chatMode = (chat: Chat): AppMode => chat.mode ?? 'chat';
 
+export type ProviderKind = 'gateway' | 'openrouter' | 'openai-compatible' | 'ollama';
+export type ProviderAuthKind = 'bearer' | 'none';
+export type ProviderConnectionStatus = 'untested' | 'testing' | 'connected' | 'error';
+
 export interface Provider {
   id: string;
   name: string;
-  /** Base URL up to and including /v1, e.g. https://api.openai.com/v1 */
+  kind: ProviderKind;
+  /** OpenAI-compatible base URL up to and including /v1. */
   baseUrl: string;
+  authKind: ProviderAuthKind;
   apiKey: string;
+  enabled: boolean;
   model: string;
+  discoveredModels: string[];
+  connectionStatus: ProviderConnectionStatus;
+  lastCheckedAt?: number;
+  lastError?: string;
 }
 
 export interface Settings {
@@ -362,7 +374,18 @@ export const DEFAULT_COWORK_TOOLS: string[] = [
 export const DEFAULT_CONTEXT_TOKENS = 64_000;
 
 export const DEFAULT_SETTINGS: Settings = {
-  providers: [{ id: 'gateway', name: 'LLM Gateway', baseUrl: '/v1', apiKey: 'not-needed', model: 'auto' }],
+  providers: [{
+    id: 'gateway',
+    name: 'LLM Gateway',
+    kind: 'gateway',
+    baseUrl: '/v1',
+    authKind: 'none',
+    apiKey: 'not-needed',
+    enabled: true,
+    model: 'auto',
+    discoveredModels: ['auto'],
+    connectionStatus: 'connected',
+  }],
   activeProviderId: 'gateway',
   temperature: 1,
   maxTokens: null,

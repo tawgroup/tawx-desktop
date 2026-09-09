@@ -8,6 +8,7 @@ import {
   redactTaskForPersistence,
   redactUnknown,
 } from './redaction.ts';
+import { isProviderRoutable, normalizeProviders } from './providers.ts';
 
 const DB_NAME = 'chatopenapi';
 const DB_VERSION = 3;
@@ -177,13 +178,20 @@ export async function deleteTask(taskId: string): Promise<void> {
 export async function loadSettings(): Promise<Settings> {
   const database = await getDB();
   const stored = await database.get('settings', SETTINGS_KEY);
-  return stored
-    ? {
-        ...DEFAULT_SETTINGS,
-        ...stored,
-        coworkEnabledTools: stored.coworkEnabledTools ?? DEFAULT_SETTINGS.coworkEnabledTools,
-      }
-    : { ...DEFAULT_SETTINGS, coworkEnabledTools: [...DEFAULT_SETTINGS.coworkEnabledTools] };
+  if (!stored) {
+    return { ...DEFAULT_SETTINGS, coworkEnabledTools: [...DEFAULT_SETTINGS.coworkEnabledTools] };
+  }
+
+  const providers = normalizeProviders(stored.providers ?? DEFAULT_SETTINGS.providers);
+  const activeProvider = providers.find((provider) => provider.id === stored.activeProviderId && isProviderRoutable(provider))
+    ?? providers.find(isProviderRoutable);
+  return {
+    ...DEFAULT_SETTINGS,
+    ...stored,
+    providers,
+    activeProviderId: activeProvider?.id ?? '',
+    coworkEnabledTools: stored.coworkEnabledTools ?? DEFAULT_SETTINGS.coworkEnabledTools,
+  };
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {

@@ -39,15 +39,16 @@ function proxyUrl(baseUrl: string, path: string): string {
   const base = normalizeBaseUrl(baseUrl);
   // Relative → already same-origin, use as-is.
   if (base.startsWith('/')) return `${base}${path}`;
-  // Absolute → route through the generic CORS proxy.
-  return `/proxy/remote/${base}${path}`;
+  const target = `${base}${path}`;
+  return `/proxy/remote?url=${encodeURIComponent(target)}`;
 }
 
 function headers(provider: Provider): HeadersInit {
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${provider.apiKey}`,
-  };
+  const requestHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (provider.authKind === 'bearer' && provider.apiKey) {
+    requestHeaders.Authorization = `Bearer ${provider.apiKey}`;
+  }
+  return requestHeaders;
 }
 
 /**
