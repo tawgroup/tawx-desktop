@@ -4,9 +4,10 @@
  * build, and no health-check race against a child process.
  */
 
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, shell } from 'electron';
 import type { Server } from 'node:http';
 import { basename, join } from 'node:path';
+import { buildAppMenuTemplate } from './app-menu.js';
 import { AuditLog } from './agent/audit.js';
 import { coreToolCapabilities, integrationCapabilities } from './agent/builtins.js';
 import { TaskRuntime, type PreparedTaskRequest } from './agent/runtime.js';
@@ -198,9 +199,21 @@ function createWindow(url: string): void {
     minWidth: 760,
     minHeight: 540,
     title: 'TAWX Desktop',
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: join(__dirname, 'preload.js'),
+    },
   });
   installExternalNavigation(window.webContents, url, (externalUrl) => shell.openExternal(externalUrl));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(buildAppMenuTemplate(
+    app.name,
+    process.platform === 'darwin',
+    (command) => {
+      if (!window.isDestroyed()) window.webContents.send('app-command', command);
+    },
+  )));
   window.maximize();
   void window.loadURL(url);
 }

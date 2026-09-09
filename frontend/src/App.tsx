@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import Composer from './components/Composer';
@@ -8,19 +8,24 @@ import ContextInspector, {
   type ContextInspection,
   type InspectedContextItem,
 } from './components/ContextInspector';
+import ShortcutHelp from './components/ShortcutHelp';
 import CoworkHub from './components/CoworkHub';
 import { selectContextPreview, useChats } from './store/useChats';
 import { useSettings } from './store/useSettings';
 import { applyTheme } from './store/useSettings';
 import { completionBody } from './lib/api';
+import { commandForKeyboardEvent, subscribeNativeCommands, type AppCommand } from './lib/shortcuts';
 import { IconEdit, IconMenu, IconSettings } from './components/Icons';
 import { chatMode, type AppMode, type CoworkSection } from './types';
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarSearchRequest, setSidebarSearchRequest] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
   const [contextInspectorOpen, setContextInspectorOpen] = useState(false);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [mode, setMode] = useState<AppMode>('chat');
   const [coworkSection, setCoworkSection] = useState<CoworkSection>('tasks');
 
@@ -157,22 +162,31 @@ export default function App() {
     taskStatus: activeTask?.status,
   }), [activeTask?.status, activeThread?.id, contextPreview, includedItems, mode, request, systemPromptSource, title]);
 
-  const openSettings = () => {
+  const openSettings = useCallback(() => {
     setPromptEditorOpen(false);
     setContextInspectorOpen(false);
+    setShortcutHelpOpen(false);
     setSettingsOpen(true);
-  };
+  }, []);
   const openPromptEditor = () => {
     setSettingsOpen(false);
     setContextInspectorOpen(false);
+    setShortcutHelpOpen(false);
     setPromptEditorOpen(true);
   };
-  const openContextInspector = () => {
+  const openContextInspector = useCallback(() => {
     setSettingsOpen(false);
     setPromptEditorOpen(false);
+    setShortcutHelpOpen(false);
     setContextInspectorOpen(true);
-  };
-  const changeMode = (nextMode: AppMode) => {
+  }, []);
+  const openShortcutHelp = useCallback(() => {
+    setSettingsOpen(false);
+    setPromptEditorOpen(false);
+    setContextInspectorOpen(false);
+    setShortcutHelpOpen(true);
+  }, []);
+  const changeMode = useCallback((nextMode: AppMode) => {
     setMode(nextMode);
     if (nextMode === 'cowork') setCoworkSection('tasks');
     const nextChat = chats.find((chat) => chatMode(chat) === nextMode);
@@ -181,17 +195,98 @@ export default function App() {
     } else {
       newChat(nextMode);
     }
-  };
+  }, [chats, newChat, selectChat]);
+
+  const runAppCommand = useCallback((command: AppCommand) => {
+    if (command === 'new-chat') {
+      newChat(mode);
+      if (mode === 'cowork') setCoworkSection('tasks');
+      return;
+    }
+    if (command === 'previous-chat' || command === 'next-chat') {
+      const modeChats = chats.filter((chat) => chatMode(chat) === mode);
+      const currentIndex = modeChats.findIndex((chat) => chat.id === activeChat?.id);
+      const targetIndex = currentIndex === -1
+        ? 0
+        : currentIndex + (command === 'previous-chat' ? -1 : 1);
+      const target = modeChats[targetIndex];
+      if (target) void selectChat(target.id);
+      return;
+    }
+    if (command === 'mode-chat' || command === 'mode-cowork' || command === 'mode-code') {
+      changeMode(command.slice('mode-'.length) as AppMode);
+      return;
+    }
+    if (command === 'focus-composer') {
+      document.querySelector<HTMLTextAreaElement>('[aria-label="Message input"]')?.focus();
+      return;
+    }
+    if (command === 'open-settings') {
+      openSettings();
+      return;
+    }
+    if (command === 'toggle-context') {
+      if (contextInspectorOpen) setContextInspectorOpen(false);
+      else openContextInspector();
+      return;
+    }
+    if (command === 'toggle-sidebar') {
+      if (window.matchMedia('(min-width: 768px)').matches) setSidebarCollapsed((collapsed) => !collapsed);
+      else setSidebarOpen((open) => !open);
+      return;
+    }
+    if (command === 'search-chats') {
+      setSidebarCollapsed(false);
+      setSidebarOpen(true);
+      setSidebarSearchRequest((request) => request + 1);
+      return;
+    }
+    if (command === 'stop-generation') {
+      useChats.getState().stop();
+      return;
+    }
+    if (command === 'show-shortcuts') openShortcutHelp();
+  }, [
+    activeChat?.id,
+    changeMode,
+    chats,
+    contextInspectorOpen,
+    mode,
+    newChat,
+    openContextInspector,
+    openSettings,
+    openShortcutHelp,
+    selectChat,
+  ]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      const command = commandForKeyboardEvent(event);
+      if (!command) return;
+      event.preventDefault();
+      runAppCommand(command);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const unsubscribe = subscribeNativeCommands(runAppCommand);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      unsubscribe();
+    };
+  }, [runAppCommand]);
 
   return (
     <div className="flex h-full overflow-hidden">
       <Sidebar
         open={sidebarOpen}
+        collapsed={sidebarCollapsed}
+        searchRequest={sidebarSearchRequest}
         mode={mode}
         activeSection={coworkSection}
         onSelectSection={setCoworkSection}
         onClose={() => setSidebarOpen(false)}
         onOpenSettings={openSettings}
+        onOpenShortcuts={openShortcutHelp}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -214,7 +309,18 @@ export default function App() {
         </header>
 
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-surface-200 px-2 dark:border-surface-800 md:h-14 md:px-3">
-          <div className="flex min-w-9 flex-1 justify-start">
+          <div className="flex min-w-9 flex-1 items-center justify-start">
+            {sidebarCollapsed && (
+              <button
+                type="button"
+                onClick={() => setSidebarCollapsed(false)}
+                className="btn-ghost hidden !px-2 md:inline-flex"
+                aria-label="Open sidebar"
+                title="Open sidebar (⌥⌘S)"
+              >
+                <IconMenu />
+              </button>
+            )}
             <button
               type="button"
               onClick={openPromptEditor}
@@ -228,13 +334,14 @@ export default function App() {
             </button>
           </div>
           <div className="flex shrink-0 rounded-xl bg-surface-100 p-1 dark:bg-surface-900" role="tablist" aria-label="Workspace mode">
-            {(['chat', 'cowork', 'code'] as const).map((item) => (
+            {(['chat', 'cowork', 'code'] as const).map((item, index) => (
               <button
                 key={item}
                 type="button"
                 role="tab"
                 aria-selected={mode === item}
                 onClick={() => changeMode(item)}
+                title={`${item[0].toUpperCase()}${item.slice(1)} (⌘${index + 1})`}
                 className={`rounded-lg px-2.5 py-1.5 text-sm font-medium capitalize transition-colors sm:px-4 ${
                   mode === item
                     ? 'bg-white text-surface-900 shadow-sm dark:bg-surface-800 dark:text-white'
@@ -242,6 +349,7 @@ export default function App() {
                 }`}
               >
                 {item}
+                <span className="ml-1.5 hidden text-[10px] font-normal opacity-50 lg:inline">⌘{index + 1}</span>
               </button>
             ))}
           </div>
@@ -251,6 +359,7 @@ export default function App() {
               onClick={openContextInspector}
               className="btn-ghost !px-2 text-xs sm:!px-3 sm:text-sm"
               aria-label="Inspect model context"
+              title="Inspect model context (⌥⌘X)"
             >
               Context
             </button>
@@ -297,6 +406,7 @@ export default function App() {
         onClose={() => setContextInspectorOpen(false)}
         inspection={inspection}
       />
+      <ShortcutHelp open={shortcutHelpOpen} onClose={() => setShortcutHelpOpen(false)} />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useChats } from '../store/useChats';
 import { chatMode, type AppMode, type Chat, type CoworkSection, type TaskStatus } from '../types';
 import { cn, groupByDate } from '../lib/utils';
@@ -25,13 +25,26 @@ const taskStatusStyles: Record<TaskStatus, string> = {
 interface Props {
   open: boolean;
   mode: AppMode;
+  collapsed: boolean;
+  searchRequest: number;
   activeSection: CoworkSection;
   onSelectSection: (section: CoworkSection) => void;
   onClose: () => void;
   onOpenSettings: () => void;
+  onOpenShortcuts: () => void;
 }
 
-export default function Sidebar({ open, mode, activeSection, onSelectSection, onClose, onOpenSettings }: Props) {
+export default function Sidebar({
+  open,
+  collapsed,
+  searchRequest,
+  mode,
+  activeSection,
+  onSelectSection,
+  onClose,
+  onOpenSettings,
+  onOpenShortcuts,
+}: Props) {
   const chats = useChats((s) => s.chats);
   const activeChatId = useChats((s) => s.activeChatId);
   const selectChat = useChats((s) => s.selectChat);
@@ -41,18 +54,27 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [query, setQuery] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
   const groups = useMemo(() => {
     const map = new Map<string, Chat[]>();
-    for (const chat of chats.filter((chat) => chatMode(chat) === mode)) {
+    for (const chat of chats.filter((chat) => (
+      chatMode(chat) === mode && chat.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
+    ))) {
       const key = groupByDate(chat.updatedAt);
       const bucket = map.get(key);
       if (bucket) bucket.push(chat);
       else map.set(key, [chat]);
     }
     return [...map.entries()];
-  }, [chats, mode]);
+  }, [chats, mode, query]);
 
   const visibleChats = groups.flatMap(([, items]) => items);
+
+  useEffect(() => {
+    if (searchRequest > 0) searchRef.current?.focus();
+  }, [searchRequest]);
+  useEffect(() => setQuery(''), [mode]);
 
   const commitRename = async (id: string) => {
     const title = draft.trim();
@@ -80,8 +102,9 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
       <aside
         className={cn(
           'fixed inset-y-0 left-0 z-40 flex w-[260px] flex-col bg-surface-50 text-surface-700',
-          'border-r border-surface-200 transition-transform duration-200',
-          'md:static md:z-auto md:translate-x-0 dark:bg-surface-900 dark:border-surface-800 dark:text-surface-300',
+          'border-r border-surface-200 transition-transform duration-200 dark:bg-surface-900 dark:border-surface-800 dark:text-surface-300',
+          'md:z-auto',
+          collapsed ? 'md:fixed md:-translate-x-full' : 'md:static md:translate-x-0',
           open ? 'translate-x-0' : '-translate-x-full',
         )}
       >
@@ -95,6 +118,7 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
             className="flex flex-1 items-center gap-2 rounded-lg px-3 py-2.5
                        text-sm font-medium transition-colors hover:bg-surface-100
                        dark:hover:bg-surface-800"
+            title="New chat (⌘N)"
           >
             <IconPlus className="h-4 w-4" />
             New {mode === 'chat' ? 'chat' : mode === 'code' ? 'code task' : 'task'}
@@ -106,6 +130,19 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
           >
             <IconClose className="h-5 w-5" />
           </button>
+        </div>
+
+        <div className="px-3 pb-3">
+          <input
+            ref={searchRef}
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={`Search ${mode === 'chat' ? 'chats' : 'tasks'}…`}
+            aria-label={`Search ${mode === 'chat' ? 'chats' : 'tasks'}`}
+            title="Search chats (⌘K)"
+            className="input !py-2 text-sm"
+          />
         </div>
 
         {mode !== 'chat' && (
@@ -149,9 +186,15 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
         <nav className="scrollbar-thin flex-1 space-y-4 overflow-y-auto px-2 pb-2">
           {visibleChats.length === 0 && (
             <p className="px-3 py-8 text-center text-sm text-surface-400 dark:text-surface-600">
-              No {mode === 'cowork' ? 'tasks' : mode === 'code' ? 'code tasks' : 'chats'} yet.
-              <br />
-              {mode === 'chat' ? 'Start a conversation.' : mode === 'code' ? 'Describe a code change.' : 'Describe an outcome.'}
+              {query.trim()
+                ? `No matching ${mode === 'chat' ? 'chats' : 'tasks'}.`
+                : `No ${mode === 'cowork' ? 'tasks' : mode === 'code' ? 'code tasks' : 'chats'} yet.`}
+              {!query.trim() && (
+                <>
+                  <br />
+                  {mode === 'chat' ? 'Start a conversation.' : mode === 'code' ? 'Describe a code change.' : 'Describe an outcome.'}
+                </>
+              )}
             </p>
           )}
 
@@ -238,12 +281,25 @@ export default function Sidebar({ open, mode, activeSection, onSelectSection, on
 
         <div className="safe-bottom border-t border-surface-200 p-2 dark:border-surface-800">
           <button
+            type="button"
+            onClick={() => {
+              onOpenShortcuts();
+              onClose();
+            }}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-sm transition-colors hover:bg-surface-100 dark:hover:bg-surface-800"
+            title="Keyboard shortcuts"
+          >
+            <span className="w-4 text-center" aria-hidden>⌘</span>
+            Keyboard shortcuts
+          </button>
+          <button
             onClick={() => {
               onOpenSettings();
               onClose();
             }}
             className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-sm
                        transition-colors hover:bg-surface-100 dark:hover:bg-surface-800"
+            title="Settings (⌘,)"
           >
             <IconSettings className="h-4 w-4" />
             Settings
