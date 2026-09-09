@@ -4,21 +4,26 @@
   "private": true,
   "description": "TAWX Desktop app",
   "author": "TAW Group",
-  "main": "main.cjs",
+  "main": "dist/main.js",
   "scripts": {
-    "dev": "electron .",
+    "dev": "npm run build && electron .",
     "build:gateway": "mkdir -p gateway-bin && go build -o gateway-bin/tawx-desktop ../cmd/llm-gateway",
-    "dist:mac": "npm run build:gateway && electron-builder --mac dir --arm64"
+    "dist:mac": "npm run build:gateway && electron-builder --mac dir --arm64",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test \"dist/**/*.test.js\""
   },
   "devDependencies": {
     "electron": "30.5.1",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "typescript": "^5.6.3",
+    "@types/node": "^20.16.11"
   },
   "build": {
     "appId": "com.tawgroup.tawx-desktop",
     "productName": "TAWX Desktop",
     "files": [
-      "main.cjs"
+      "dist/**/*"
     ],
     "extraResources": [
       {
@@ -38,5 +43,8 @@
       "category": "public.app-category.productivity",
       "target": "dir"
     }
+  },
+  "dependencies": {
+    "yaml": "^2.5.1"
   }
 }
