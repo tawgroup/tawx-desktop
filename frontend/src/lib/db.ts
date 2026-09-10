@@ -11,7 +11,7 @@ import {
 import { isProviderRoutable, normalizeProviders } from './providers.ts';
 
 const DB_NAME = 'chatopenapi';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const SETTINGS_KEY = 'app';
 
 interface ChatDB extends DBSchema {
@@ -89,6 +89,21 @@ function getDB(): Promise<IDBPDatabase<ChatDB>> {
           };
           void Promise.all([redactChats(), redactMessages(), redactTasks(), redactSettings()])
             .catch(() => transaction.abort());
+        }
+        // Web search became a default rather than an opt-in. A stored profile
+        // carries the old `false` and loadSettings lets stored win over
+        // DEFAULT_SETTINGS, so the flag has to be flipped in place or existing
+        // profiles would never see the new default.
+        if (oldVersion > 0 && oldVersion < 4) {
+          const enableWebSearch = async () => {
+            const settings = transaction.objectStore('settings');
+            let cursor = await settings.openCursor();
+            while (cursor) {
+              await cursor.update({ ...cursor.value, webSearch: true });
+              cursor = await cursor.continue();
+            }
+          };
+          void enableWebSearch().catch(() => transaction.abort());
         }
       },
     });

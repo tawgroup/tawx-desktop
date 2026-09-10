@@ -160,6 +160,12 @@ export interface Settings {
   contentSize: 'sm' | 'md' | 'lg' | 'xl';
   streaming: boolean;
   sendOnEnter: boolean;
+  /**
+   * On by default: a model that answers "what day is it" from memory is worse
+   * than one that costs a fraction of a cent to check. Only the OpenRouter
+   * path can honour it (see supportsWebSearch), and it is bounded to one
+   * search of three results per answer to keep that fraction small.
+   */
   webSearch: boolean;
   webSearchEngine: WebSearchEngine;
   coworkPolicy: ThreadPolicy;
@@ -447,7 +453,7 @@ export const DEFAULT_SETTINGS: Settings = {
   contentSize: 'md',
   streaming: true,
   sendOnEnter: true,
-  webSearch: false,
+  webSearch: true,
   webSearchEngine: 'auto',
   coworkPolicy: 'ask',
   coworkEnabledTools: DEFAULT_COWORK_TOOLS,
