@@ -50,6 +50,31 @@ test('attachment-only messages omit a meaningless empty text part', () => {
   assert.deepEqual(message.content, [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }]);
 });
 
+test('serializes cached vision evidence instead of images for text-only destinations', () => {
+  const message = serializeMessage({
+    role: 'user',
+    content: 'What failed?',
+    attachments: [{ id: 'image', name: 'error.png', mimeType: 'image/png', size: 12, kind: 'image', dataUrl: 'data:image/png;base64,AAAA' }],
+    visionAnalysis: {
+      text: 'HTTP 400: image input unsupported',
+      providerId: 'openrouter',
+      providerName: 'OpenRouter',
+      model: 'google/gemini-3.1-flash-lite',
+      attachmentIds: ['image'],
+      promptVersion: 1,
+      createdAt: 100,
+    },
+  }, { useVisionAnalysis: true });
+
+  assert.equal(Array.isArray(message.content), true);
+  assert.equal(Array.isArray(message.content) && message.content.some((part) => part.type === 'image_url'), false);
+  const evidence = Array.isArray(message.content) && message.content.at(-1)?.type === 'text'
+    ? message.content.at(-1)!.text
+    : '';
+  assert.match(evidence, /UNTRUSTED IMAGE-DERIVED EVIDENCE/);
+  assert.match(evidence, /HTTP 400: image input unsupported/);
+});
+
 test('context compaction preserves system instructions and the newest turn', () => {
   const compacted = compactMessages([
     { role: 'system', content: 'system prompt' },
