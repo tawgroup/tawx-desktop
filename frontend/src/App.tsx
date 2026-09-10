@@ -10,6 +10,7 @@ import ContextInspector, {
 } from './components/ContextInspector';
 import ShortcutHelp from './components/ShortcutHelp';
 import CoworkHub from './components/CoworkHub';
+import StatusLine from './components/StatusLine';
 import { selectContextPreview, useChats } from './store/useChats';
 import { useSettings } from './store/useSettings';
 import { applyTheme } from './store/useSettings';
@@ -387,6 +388,17 @@ export default function App() {
             <Composer mode={mode} />
           </>
         )}
+        <StatusLine
+          mode={mode}
+          coworkSection={coworkSection}
+          task={activeTask}
+          provider={activeProvider}
+          budget={mode === 'chat' ? contextPreview.budget : activeTask?.context ?? contextPreview.budget}
+          workspace={contextPreview.workspace}
+          policy={contextPreview.policy}
+          onOpenContext={openContextInspector}
+          onOpenSettings={openSettings}
+        />
       </main>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
