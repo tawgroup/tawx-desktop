@@ -35,7 +35,7 @@ export OPENROUTER_API_KEY="$(omp token openrouter)"
 
 if [[ ! -f "$config_path" ]]; then
   install -d -m 700 "$config_dir"
-  source_config="$repo_dir/etc/config.omp.yaml"
+  source_config="$repo_dir/etc/config.desktop.yaml"
   [[ -f "$legacy_config" ]] && source_config="$legacy_config"
   install -m 600 "$source_config" "$config_path"
 fi
@@ -86,7 +86,7 @@ cd "$repo_dir"
 if [[ -n "${TAWX_DESKTOP_BIN:-}" ]]; then
   "$TAWX_DESKTOP_BIN" run "$config_path" &
 else
-  go run ./cmd/llm-gateway run "$config_path" &
+  TAWX_DESKTOP_CONFIG="$config_path" npm --prefix desktop run dev &
 fi
 gateway_pid="$!"
 pids+=("$gateway_pid")

@@ -8,7 +8,7 @@ export default defineConfig({
     port: 5173,
   },
   build: {
-    outDir: '../gateway/web',
+    outDir: '../desktop/web',
     emptyOutDir: true,
     // highlight.js and the markdown pipeline dominate the bundle; splitting them
     // out keeps the app shell small and lets them cache independently.

@@ -28,6 +28,10 @@
       {
         "from": "../etc/config.desktop.yaml",
         "to": "etc/config.desktop.yaml"
+      },
+      {
+        "from": "web",
+        "to": "web"
       }
     ],
     "mac": {

@@ -1,17 +1,28 @@
-.PHONY: clean build ui test
+.PHONY: clean install ui build test dev dist
 
-GOBIN ?= $(shell go env GOPATH)/bin
+# The frontend bundles into desktop/web, which the Electron main process serves
+# and electron-builder copies into the packaged app. Building the UI is
+# therefore a prerequisite of anything that runs the app.
 
-clean:
-	go clean ./...
-	rm -f $(GOBIN)/*
-
-build:
-	go install ./...
+install:
+	cd frontend && npm ci
+	cd desktop && npm ci
 
 ui:
-	cd frontend && npm ci && npm run build
+	cd frontend && npm run build
+
+build: ui
+	cd desktop && npm run build
+
+dev: ui
+	cd desktop && npm run dev
+
+dist: ui
+	cd desktop && npm run dist:mac
 
 test:
-	go test ./... -count=1
-	go vet ./...
+	cd frontend && npm run lint && npm test
+	cd desktop && npm run typecheck && npm test
+
+clean:
+	rm -rf desktop/dist desktop/web

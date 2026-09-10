@@ -1,533 +1,89 @@
 # TAWX Desktop
 
-An OpenAI-compatible API proxy that routes requests to OpenAI, Anthropic, and any OpenAI-compatible backend (Ollama, vLLM, llama-server, SGLang, etc.). Optionally expose the gateway via [zrok](https://zrok.io) for zero-trust access.
+A desktop chat app for OpenAI-compatible LLM providers. It runs an
+OpenAI-compatible gateway inside its own Electron main process, so the UI, the
+provider routing, and the agent runtime are one application with no sidecar and
+no separate server to start.
 
-## Why another LLM gateway?
+Provider API keys are held by the main process and encrypted with the operating
+system keychain. They never reach the renderer, and no HTTP response carries
+them.
 
-Most LLM proxies solve API translation. This one also solves the network problem: how do you connect a gateway to GPU boxes behind NAT, expose it to clients without opening ports, and route requests to the right model — all without bolting on a VPN, a service mesh, or a routing database?
+## Layout
 
-- **Zero-trust networking with zrok (over OpenZiti)** — the gateway and its backends communicate using [zrok](https://github.com/openziti/zrok) over [OpenZiti](https://openziti.io) overlay networks. Expose the gateway or reach a backend across NAT, air-gapped networks, or cloud boundaries without firewall rules or port forwarding. Both directions work the same way.
-- **Semantic routing** — a three-layer cascade (keyword heuristics, embedding similarity, LLM classifier) selects the best model automatically when clients omit the `model` field. No hand-maintained routing tables.
-- **Multi-endpoint load balancing** — weighted round-robin, health checks with passive failover, and VM sleep detection across a pool of inference servers. Works with Ollama, llama-server, vLLM, SGLang, or anything that exposes `/v1/chat/completions`. Built for distributing inference across real hardware.
-- **Single binary, zero infrastructure** — one Go binary, one YAML file. No database, no message queue, no sidecar.
+| Directory   | What it is |
+|-------------|------------|
+| `desktop/`  | Electron main process: the gateway HTTP surface, provider adapters, agent runtime, scheduler, skills, integrations |
+| `frontend/` | React UI, bundled into `desktop/web` |
+| `etc/`      | The config template copied to `~/tawx-desktop/config.yaml` on first launch |
+| `docs/`     | Reference for configuration, providers, semantic routing, metrics and streaming |
 
-## Features
-
-- **OpenAI-compatible API**: Drop-in replacement for OpenAI client libraries
-- **Multi-provider routing**: Automatically routes requests based on model name
-- **Semantic routing**: Optional three-layer cascade (heuristics, embeddings, LLM classifier) to automatically select the best model when `model` is omitted
-- **Anthropic translation**: Transparently converts OpenAI format to/from Anthropic's Messages API
-- **Streaming support**: Server-Sent Events (SSE) streaming for all providers
-- **Bundled web UI**: Chat history, Markdown/code rendering, model settings, themes, and streaming in the same binary
-- **Multi-endpoint load balancing**: Round-robin load distribution and automatic failover across multiple inference backends
-- **OpenTelemetry metrics**: Prometheus-exported metrics for requests, latency, tokens, and endpoint health
-- **zrok integration**: Expose the gateway via zrok private or public shares
-- **Zero-trust backends**: Connect to any provider via zrok shares (no exposed ports)
-
-> **New here?** See the [Getting Started guide](docs/current/getting-started.md) for a step-by-step walkthrough from zero to a working gateway.
-
-## Installation
-
-Pre-built binaries for Linux, macOS, and Windows are available on the [Releases](https://github.com/openziti/llm-gateway/releases) page.
-
-Or install with Go:
+## Running from source
 
 ```bash
-go install github.com/openziti/llm-gateway/cmd/llm-gateway@latest
+make install     # npm ci in frontend/ and desktop/
+make dev         # build the UI, then launch Electron
 ```
 
-Or build from source:
+`make dev` serves the app at `http://127.0.0.1:18080`, which is also the
+OpenAI-compatible endpoint — any client that speaks the OpenAI API can point at
+it:
 
 ```bash
-git clone https://github.com/openziti/llm-gateway.git
-cd llm-gateway
-go install ./...
+curl http://127.0.0.1:18080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-## Quick Start
-
-1. Create a config file:
-
-```yaml
-# config.yaml
-listen: ":8080"
-
-providers:
-  open_ai:
-    api_key: "${OPENAI_API_KEY}"
-  anthropic:
-    api_key: "${ANTHROPIC_API_KEY}"
-  local:                               # works with any OpenAI-compatible backend
-    base_url: "http://localhost:11434"
-```
-
-2. Run the gateway:
-
-```bash
-export OPENAI_API_KEY="sk-..."
-export ANTHROPIC_API_KEY="sk-ant-..."
-llm-gateway run config.yaml
-```
-
-3. Make requests using any OpenAI-compatible client:
-
-```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-Or open `http://localhost:8080/` for the bundled chat UI. It defaults to the
-virtual `auto` model when semantic routing is enabled.
-
-The UI source lives in `frontend/` and is based on MIT-licensed
-[ChatOpenApi](https://github.com/hrmncode/ChatOpenApi). Rebuild embedded assets
-after frontend changes with `make ui`.
-
-## Provider Routing
-
-Requests are routed based on model name prefix:
-
-| Model Prefix | Provider |
-|--------------|----------|
-| `gpt-*` | OpenAI |
-| `o1-*` | OpenAI |
-| `o3-*` | OpenAI |
-| `claude-*` | Anthropic |
-| Everything else | Local / self-hosted |
-
-Any model that doesn't match the OpenAI or Anthropic prefixes is routed to the local provider. It works with any OpenAI-compatible backend — Ollama, vLLM, llama-server, SGLang, or similar.
-
-### Multi-Endpoint Load Balancing
-
-Distribute requests across multiple inference backends for load balancing and resilience. When `endpoints` is present, the gateway uses round-robin selection with automatic failover:
-
-```yaml
-providers:
-  local:
-    endpoints:
-      - name: gpu-box-1
-        base_url: "http://10.0.0.1:11434"
-        weight: 3
-      - name: gpu-box-2
-        base_url: "http://10.0.0.2:11434"
-      - name: remote
-        zrok_share_token: "abc123"
-    health_check:
-      interval_seconds: 30   # default: 30
-      timeout_seconds: 5     # default: 5
-```
-
-Each endpoint can use direct HTTP or a zrok share. The optional `weight` (default: 1) controls the proportion of traffic an endpoint receives — an endpoint with weight 3 gets ~3x the requests of weight 1. A background goroutine pings each endpoint at the configured interval and marks unhealthy endpoints for automatic skip. Network errors during requests also trigger immediate passive failover. All gateway features that use the local provider (chat completions, embeddings, classifier) distribute requests across the endpoint group.
-
-The endpoints don't all have to run the same software. You can mix Ollama, vLLM, llama-server, or any other OpenAI-compatible server in the same pool — the load balancing layer doesn't care what's behind the URL.
-
-## API Endpoints
-
-### POST /v1/chat/completions
-
-OpenAI-compatible chat completions endpoint. Supports both streaming (`stream: true`) and non-streaming requests. When semantic routing is enabled, the `model` field is optional.
-
-### GET /v1/models
-
-Returns available models from all configured providers. When semantic routing is enabled, includes an `auto` virtual model that triggers automatic model selection. With multi-endpoint mode, returns the deduplicated union of models from all healthy endpoints.
-
-### GET /health
-
-Returns `{"status":"ok"}` with HTTP 200. Use for liveness checks.
-
-### GET /metrics
-
-Prometheus metrics endpoint (when `metrics.enabled: true`). Exposes request counts, duration histograms, token counters, routing decisions, provider errors, in-flight gauges, and endpoint health.
-
-## Configuration
-
-### Full Configuration Example
-
-```yaml
-listen: ":8080"
-
-zrok:
-  share:
-    enabled: false
-    mode: private      # public or private
-    token: ""          # use existing persistent share (private only)
-
-providers:
-  open_ai:
-    api_key: "${OPENAI_API_KEY}"
-    base_url: ""             # optional: override for Azure or compatible APIs
-    zrok_share_token: ""     # optional: connect via zrok share
-
-  anthropic:
-    api_key: "${ANTHROPIC_API_KEY}"
-    base_url: ""             # optional: override base URL
-    zrok_share_token: ""     # optional: connect via zrok share
-
-  local:
-    base_url: "http://localhost:11434"
-    zrok_share_token: ""     # optional: connect via zrok share
-
-    # or use multi-endpoint mode for round-robin + failover:
-    # endpoints:
-    #   - name: gpu-box-1
-    #     base_url: "http://10.0.0.1:11434"
-    #   - name: gpu-box-2
-    #     base_url: "http://10.0.0.2:11434"
-    #   - name: remote
-    #     zrok_share_token: "abc123"
-    # health_check:
-    #   interval_seconds: 30
-    #   timeout_seconds: 5
-
-metrics:
-  enabled: false
-```
-
-### Environment Variables
-
-API keys support environment variable expansion using `${VAR}` syntax.
-
-## API Keys
-
-The gateway supports virtual API keys for client authentication. Generate a key and add it to the config:
-
-```bash
-llm-gateway genkey
-# sk-gw-a1b2c3d4e5f6...
-```
-
-```yaml
-api_keys:
-  enabled: true
-  keys:
-    - name: alice
-      key: "sk-gw-a1b2c3d4e5f6..."
-```
-
-Clients send the key via the `Authorization: Bearer <key>` header. The `/health` and `/metrics` endpoints remain unauthenticated. Keys can be restricted to specific models using glob patterns. See [docs/current/api-keys.md](docs/current/api-keys.md) for the client-facing contract and [docs/current/key-sources.md](docs/current/key-sources.md) for reloadable YAML and HTTP sources.
-
-## Semantic Routing
-
-When configured, the gateway can automatically select the best model for a request based on its content. The `model` field becomes optional — if omitted, the request passes through a three-layer cascade:
-
-1. **Heuristics** — fast keyword/pattern matching (e.g. "translate" -> fast model, tool use -> tool-capable model)
-2. **Embeddings** — cosine similarity between the user prompt and route exemplars using Ollama or OpenAI embeddings
-3. **LLM Classifier** — asks an LLM to classify the request when embeddings are ambiguous
-
-Each layer can be independently enabled or disabled — for example, the classifier can be used without embeddings. If all layers are skipped or inconclusive, the configured default route is used. When semantic routing is disabled or unconfigured, behavior is unchanged.
-
-### Semantic Routing Configuration
-
-```yaml
-routing:
-  allow_explicit_model: true    # clients can still specify a model directly
-  default_route: general        # fallback when no layer matches
-
-  heuristics:
-    enabled: true
-    rules:
-      - match:
-          keywords: ["translate", "translation"]
-        route: fast
-      - match:
-          has_tools: true
-        route: tools
-      - match:
-          system_prompt_contains: "you are a code assistant"
-        route: coding
-      - match:
-          max_tokens_lt: 100
-          message_length_lt: 200
-        route: fast
-
-  semantic:
-    enabled: true
-    provider: local             # local or openai
-    model: nomic-embed-text
-    threshold: 0.82             # confident match
-    ambiguous_threshold: 0.65   # escalate to classifier
-    comparison: centroid         # centroid, max, or average
-
-  classifier:
-    enabled: true
-    provider: local
-    model: llama3
-    # Optional instruction; route descriptions and required JSON output are appended automatically.
-    prompt: "Choose the cheapest route that can reliably complete the request. Do not answer it."
-    timeout_ms: 5000
-    confidence_threshold: 0.7
-
-  routes:
-    - name: coding
-      model: claude-sonnet-4-20250514
-      description: "code generation, debugging, and technical tasks"
-      examples:
-        - "write a python function to sort a list"
-        - "debug this segfault in my C code"
-
-    - name: creative
-      model: claude-sonnet-4-20250514
-      description: "creative writing, storytelling, and artistic content"
-      examples:
-        - "write a poem about the ocean"
-        - "tell me a story about a dragon"
-
-    - name: fast
-      model: llama3
-      description: "simple tasks, translations, and short responses"
-      examples:
-        - "translate hello to French"
-        - "what is 2+2"
-
-    - name: tools
-      model: gpt-4
-      description: "tasks requiring tool use and function calling"
-      examples:
-        - "search the web for recent news"
-        - "call the weather API for New York"
-
-    - name: general
-      model: llama3
-      description: "general conversation and miscellaneous tasks"
-      examples:
-        - "what is the capital of France"
-        - "explain quantum computing"
-```
-
-The classifier model and instruction are both settings. Change `classifier.model` to use another model and `classifier.prompt` to tune the routing policy without editing code.
-
-### macOS desktop app
-
-The Electron shell starts the gateway in-process and reads `~/tawx-desktop/config.yaml`. It does not
-start OMP or any authentication sidecar. On first launch it creates the config from the bundled
-template; set `providers.open_router.api_key` to an OpenRouter key before restarting the app.
-
-Cowork and Code threads can select a project folder with the native macOS picker. The canonical
-workspace path is persisted per thread, and Code mode works directly in that workspace. Agent tasks
-persist locally, resume after reopening the app, and expose their system prompt, context usage,
-reasoning, todo state, tool calls, results, and audit history.
-
-The agent runs tools iteratively rather than returning a one-shot preview. It can inspect and edit
-files, run commands, inspect Git state, show diffs, and undo checkpointed changes. Image and readable
-file attachments remain in the transcript, while the context inspector shows what is being sent and
-when compaction occurs. Skills, schedules, an isolated browser, MCP servers, and persistent artifacts
-are available from the Cowork control panels.
-
-Workspace containment and secret redaction apply to persisted tasks, events, audit records, and
-exports. Permission policy and the enabled-tool list are enforced on every task; command, Git,
-browser, MCP, and other external or mutating actions remain explicitly gated and surface approval
-requests in the thread.
-
-```bash
-cd desktop
-npm install
-npm run dev
-```
-
-Build the packaged app with `npm run dist:mac`.
-
-### Heuristic Match Conditions
-
-Each heuristic rule has a `match` block with one or more conditions. When multiple conditions are specified in a single rule, all must match (AND logic). Within `keywords`, any keyword matching triggers the rule (OR logic). Available conditions:
-
-| Condition | Description |
-|-----------|-------------|
-| `keywords` | Case-insensitive word-boundary match against user message content |
-| `has_tools` | Matches if request includes/lacks tool definitions |
-| `system_prompt_contains` | Substring match on the system message |
-| `max_tokens_lt` | Matches if `max_tokens` is below a threshold |
-| `message_length_lt` | Matches if total message character length is below a threshold |
-| `exclude` | List of phrases that suppress keyword matches if found in user messages |
-
-### Sending Requests Without a Model
-
-With semantic routing enabled, the `model` field can be omitted:
-
-```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [{"role": "user", "content": "Write a Python function to sort a list"}]
-  }'
-```
-
-### Using with Chat Clients (Open WebUI, etc.)
-
-Chat clients like Open WebUI require selecting a model from the model list — they always send a `model` field. When semantic routing is enabled, the gateway exposes a virtual `auto` model that triggers automatic routing:
-
-```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "auto",
-    "messages": [{"role": "user", "content": "Write a Python function to sort a list"}]
-  }'
-```
-
-Point your client at `http://localhost:8080/v1` and select `auto` from the model list. The gateway will route each request through the semantic routing cascade.
-
-The gateway logs each routing decision with the method used, confidence score, latency, and cascade trace.
-
-## Metrics
-
-Enable OpenTelemetry metrics with a Prometheus exporter:
-
-```yaml
-metrics:
-  enabled: true
-```
-
-When enabled, the gateway serves Prometheus metrics at `GET /metrics` on the same listen address. Available metrics:
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `llm_gateway.requests` | Counter | Total requests (by provider, model, streaming) |
-| `llm_gateway.request.duration` | Histogram | Request duration in seconds (by provider, model) |
-| `llm_gateway.tokens.prompt` | Counter | Total prompt tokens (by provider, model) |
-| `llm_gateway.tokens.completion` | Counter | Total completion tokens (by provider, model) |
-| `llm_gateway.routing.decisions` | Counter | Semantic routing decisions (by method) |
-| `llm_gateway.provider.errors` | Counter | Provider errors (by error_type) |
-| `llm_gateway.requests.inflight` | Gauge | Currently in-flight requests |
-| `llm_gateway.endpoint.healthy` | Gauge | Endpoint health status |
-
-## Tracing
-
-Enable request body logging for debugging routing decisions:
-
-```yaml
-tracing:
-  enabled: true
-  max_content_length: 200   # max characters per message in log output
-```
-
-Each chat completion request is logged with the model, message count, streaming flag, tool count, and each message's role and truncated content. See [docs/current/configuration.md](docs/current/configuration.md) for details.
-
-## CLI Reference
-
-```
-llm-gateway run <configPath>
-
-Flags:
-      --address string     listen address (overrides config)
-      --zrok               enable zrok sharing (overrides config)
-      --zrok-mode string   zrok share mode: public, private (overrides config)
-```
-
-## zrok Integration
-
-### Exposing the Gateway
-
-Enable zrok sharing to expose the gateway without opening firewall ports:
-
-```yaml
-zrok:
-  share:
-    enabled: true
-    mode: private
-```
-
-Or via CLI:
-
-```bash
-llm-gateway run config.yaml --zrok --zrok-mode private
-```
-
-The gateway will log the share token on startup. Clients connect using zrok access.
-
-### Using Persistent Shares
-
-For stable share tokens across restarts, create a persistent share with the zrok CLI and reference it:
-
-```yaml
-zrok:
-  share:
-    enabled: true
-    token: "abc123xyz"  # your persistent share token
-```
-
-### Connecting to Backends via zrok
-
-Any provider can be reached through a zrok share instead of a direct URL:
-
-```yaml
-providers:
-  open_ai:
-    api_key: "${OPENAI_API_KEY}"
-    zrok_share_token: "openai-proxy-share-token"
-
-  anthropic:
-    api_key: "${ANTHROPIC_API_KEY}"
-    zrok_share_token: "anthropic-proxy-share-token"
-
-  local:
-    zrok_share_token: "ollama-share-token"
-```
-
-## Examples
-
-### Using with Python OpenAI Client
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:8080/v1",
-    api_key="not-needed"  # gateway handles auth
-)
-
-# routes to OpenAI
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[{"role": "user", "content": "Hello!"}]
-)
-
-# routes to Anthropic (translated automatically)
-response = client.chat.completions.create(
-    model="claude-sonnet-4-20250514",
-    messages=[{"role": "user", "content": "Hello!"}]
-)
-
-# routes to local backend (Ollama, vLLM, etc.)
-response = client.chat.completions.create(
-    model="llama3.2",
-    messages=[{"role": "user", "content": "Hello!"}]
-)
-```
-
-### Streaming
-
-```python
-stream = client.chat.completions.create(
-    model="claude-sonnet-4-20250514",
-    messages=[{"role": "user", "content": "Write a haiku"}],
-    stream=True
-)
-
-for chunk in stream:
-    if chunk.choices[0].delta.content:
-        print(chunk.choices[0].delta.content, end="")
-```
-
-## Documentation
-
-- [Getting Started](docs/current/getting-started.md) -- step-by-step setup guide
-- [Configuration](docs/current/configuration.md) -- full config reference and CLI flags
-- [Providers](docs/current/providers.md) -- provider details, streaming, and error handling
-- [Semantic Routing](docs/current/semantic-routing.md) -- threshold tuning, comparison modes, and caching
-- [API Keys](docs/current/api-keys.md) -- per-key model and route restrictions
-- [Key Sources](docs/current/key-sources.md) -- reloadable key records, YAML and HTTP contracts, staleness, and observability
-- [Multi-Endpoint Load Balancing](docs/current/multi-endpoint.md) -- weighted load balancing and failover
-- [Metrics](docs/current/metrics.md) -- Prometheus instruments and example queries
-- [Streaming](docs/current/streaming.md) -- SSE streaming details
-- [zrok](docs/current/zrok.md) -- overlay networking for sharing and access
-- [Agora](docs/current/agora.md) -- Agora overlay networking for serving and dialing (peer transport to zrok)
-- [Dummy Model](docs/current/dummy-model.md) -- fake OpenAI-compatible backend for testing and demos
-- [Dummy Keys](docs/current/dummy-keys.md) -- reference key API serving the HTTP key-source contract, with fault injection
-
-## License
-
-Apache 2.0
+`make test` runs the frontend lint and tests, then the desktop typecheck and
+tests. `make dist` packages a macOS app.
+
+The UI must be built before the app can serve it, which is why `dev`, `build`
+and `dist` all depend on `ui`. Running `npm run dev` inside `desktop/` alone
+gives a blank window on a fresh clone.
+
+## Providers
+
+Two kinds of provider coexist.
+
+**Configured in Settings.** Added through the app's Settings panel and owned by
+the main process. The key is encrypted with the OS keychain and stored in
+`providers.json` under the app's user-data directory. These are addressed as
+`<providerId>/<model>` — for example `deepseek/deepseek-chat`. The provider
+named by the prefix serves the request, so two providers can offer the same
+model name without colliding.
+
+**Configured in `config.yaml`.** Read at startup from
+`~/tawx-desktop/config.yaml`, and shown in Settings as read-only. Routed by
+model name: an `openrouter/` prefix wins first, then `gpt-`, `o1-` and `o3-` go
+to OpenAI and `claude-` to Anthropic, and anything else falls through to the
+local backend.
+
+Adding a vendor means writing one adapter and adding one entry to
+`PROVIDER_KINDS` in `desktop/src/providers/kinds.ts`. Nothing else in the
+codebase branches on vendor identity.
+
+`GET /v1/models` lists every configured provider's models with ids qualified as
+`<providerId>/<model>`, so whatever it returns can be sent straight back as the
+`model` of a completion request.
+
+## Semantic routing
+
+When a request omits `model` or sends `auto`, a three-layer cascade picks one:
+keyword heuristics, then embedding similarity, then an LLM classifier. Routes
+are declared in `config.yaml`. See `docs/current/semantic-routing.md`.
+
+## History
+
+This project began as a fork of
+[openziti/llm-gateway](https://github.com/openziti/llm-gateway), a Go gateway
+whose distinguishing feature was reaching inference backends over
+[zrok](https://zrok.io) and [OpenZiti](https://openziti.io) overlay networks —
+no port forwarding, no VPN. The desktop app never used that, and the Go
+implementation was ported to TypeScript so the gateway could run in the Electron
+main process. The Go tree, its zrok and OpenZiti transports, its API-key store
+and its release pipeline were removed once nothing depended on them; they remain
+in git history and upstream.
+
+The UI is based on MIT-licensed
+[ChatOpenApi](https://github.com/hrmncode/ChatOpenApi).

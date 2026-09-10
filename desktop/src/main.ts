@@ -120,7 +120,7 @@ async function start(): Promise<string> {
 
   server = createGatewayServer({
     router,
-    webRoot: app.isPackaged ? join(process.resourcesPath, 'web') : join(resourceRoot(), 'gateway', 'web'),
+    webRoot: app.isPackaged ? join(process.resourcesPath, 'web') : join(__dirname, '..', 'web'),
     ...(resolveModel && { resolveModel }),
     desktop: {
       runtime,
