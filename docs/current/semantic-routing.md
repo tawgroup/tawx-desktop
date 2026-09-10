@@ -214,7 +214,6 @@ semantic:
 
 **OpenAI** -- calls `POST /v1/embeddings` with an `Authorization: Bearer` header. Requires `api_key` in the provider config.
 
-Either provider can be reached through a zrok share if configured at the provider level.
 
 ### Comparison Modes
 

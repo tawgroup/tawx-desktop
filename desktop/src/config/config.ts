@@ -38,15 +38,10 @@ export interface ProvidersConfig {
   local?: LocalConfig;
 }
 
-export interface MetricsConfig {
-  enabled?: boolean;
-}
-
 export interface GatewayConfig {
   listen: string;
   providers?: ProvidersConfig;
   routing?: RoutingConfig;
-  metrics?: MetricsConfig;
 }
 
 export const DEFAULT_LISTEN = '127.0.0.1:18080';

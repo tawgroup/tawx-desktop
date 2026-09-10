@@ -7,7 +7,7 @@ The gateway supports streaming chat completions using Server-Sent Events (SSE). 
 Send a normal chat completion request with `stream` set to `true`:
 
 ```bash
-curl -N http://localhost:8080/v1/chat/completions \
+curl -N http://127.0.0.1:18080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "llama3",
