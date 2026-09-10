@@ -96,6 +96,12 @@ export function buildAppMenuTemplate(
         commandItem('Toggle Sidebar', 'CommandOrControl+Alt+S', 'toggle-sidebar', send),
         commandItem('Toggle Context Inspector', 'CommandOrControl+Alt+X', 'toggle-context', send),
         { type: 'separator' },
+        // Chromium's own page zoom, which scales the whole UI and persists per
+        // window. The accelerators come with the roles.
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
         { role: 'togglefullscreen' },
       ],
     },
