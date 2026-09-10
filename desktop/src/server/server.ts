@@ -12,6 +12,7 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { ApiError, ErrorType, asApiError, errInvalidJson, errMessagesRequired, errModelRequired, statusCodeForError, writeError } from '../providers/errors.js';
+import { handleRemoteProvider } from './remote-proxy.js';
 import { SseWriter } from './sse.js';
 import { TaskRuntime, TaskRuntimeError } from '../agent/runtime.js';
 import type { AgentEvent, AgentTaskRequest, ApprovalDecision, DesktopHttpHandler, WorkspaceSnapshot } from '../agent/types.js';
@@ -93,6 +94,11 @@ async function handle(
     if (method !== 'POST') return methodNotAllowed(method, path, res);
     return handleChatCompletions(req, res, options);
   }
+  if (path === '/proxy/remote') {
+    if (method !== 'GET' && method !== 'POST') return methodNotAllowed(method, path, res);
+    return handleRemoteProvider(req, res, url);
+  }
+
   if (path.startsWith('/desktop/')) {
     if (!isSameOriginDesktopRequest(req)) {
       return sendJson(res, 403, { error: { message: 'cross-origin desktop control request denied' } });
