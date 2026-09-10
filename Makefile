@@ -1,8 +1,9 @@
 .PHONY: clean install ui build test dev dist
 
-# The frontend bundles into desktop/web, which the Electron main process serves
-# and electron-builder copies into the packaged app. Building the UI is
-# therefore a prerequisite of anything that runs the app.
+# The UI is not committed. `make ui` builds it from frontend/ into desktop/web,
+# where the Electron main process serves it and electron-builder copies it into
+# the packaged app. The desktop npm scripts build it themselves too, so either
+# entry point works on a fresh clone.
 
 install:
 	cd frontend && npm ci
@@ -14,10 +15,10 @@ ui:
 build: ui
 	cd desktop && npm run build
 
-dev: ui
+dev:
 	cd desktop && npm run dev
 
-dist: ui
+dist:
 	cd desktop && npm run dist:mac
 
 test:

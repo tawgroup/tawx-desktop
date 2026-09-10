@@ -6,9 +6,10 @@
   "author": "TAW Group",
   "main": "dist/main.js",
   "scripts": {
-    "dev": "npm run build && electron .",
-    "dist:mac": "electron-builder --mac dir --arm64",
+    "ui": "npm --prefix ../frontend run build",
+    "dev": "npm run ui && npm run build && electron .",
     "build": "tsc -p tsconfig.json",
+    "dist:mac": "npm run ui && npm run build && electron-builder --mac dir --arm64",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test \"dist/**/*.test.js\""
   },

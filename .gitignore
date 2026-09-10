@@ -15,6 +15,9 @@ node_modules/
 /dist/
 /desktop/dist/
 /desktop/gateway-bin/
+# the bundled UI: built by `make ui` from frontend/. It was tracked only
+# because Go's //go:embed needed it committed; nothing embeds it now.
+/desktop/web/
 
 # generated files
 .docusaurus
