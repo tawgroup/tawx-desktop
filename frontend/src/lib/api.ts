@@ -26,6 +26,12 @@ export class ApiError extends Error {
   }
 }
 
+/** Turns an in-stream error frame into the same ApiError a failed POST raises. */
+function streamError(error: NonNullable<StreamDelta['error']>): ApiError {
+  const status = typeof error.code === 'number' ? error.code : undefined;
+  return new ApiError(error.message || 'The provider ended the stream with an error', status);
+}
+
 /** Trims trailing slashes so callers can paste either `.../v1` or `.../v1/`. */
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/+$/, '');
@@ -196,6 +202,10 @@ export async function streamCompletion({
 
           try {
             const chunk = JSON.parse(payload) as StreamDelta;
+            // A provider that fails after the response headers are sent reports
+            // it in-band. Dropping the frame here would end the turn silently,
+            // leaving an empty reply and no way to tell what went wrong.
+            if (chunk.error) throw streamError(chunk.error);
             if (chunk.model) onModel?.(chunk.model);
             const usage = normalizeCompletionUsage(chunk.usage, provider, model);
             if (usage) onUsage?.(usage);
@@ -206,7 +216,8 @@ export async function streamCompletion({
               full += token;
               onToken(token);
             }
-          } catch {
+          } catch (err) {
+            if (err instanceof ApiError) throw err;
             // Ignore keepalive comments and malformed frames.
           }
         }
@@ -239,6 +250,9 @@ export async function fetchCompletion({
 
   if (!res.ok) throw new ApiError(await parseError(res), res.status);
   const data = (await res.json()) as CompletionResponse;
+  // Same in-band failure as the streaming path: a 200 body carrying an error
+  // must not be read as an empty reply.
+  if (data.error) throw streamError(data.error);
   return {
     content: data.choices?.[0]?.message?.content ?? '',
     model: data.model,

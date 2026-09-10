@@ -236,6 +236,12 @@ export interface CompletionUsage {
 
 export interface StreamDelta {
   model?: string;
+  /**
+   * An upstream failure reported mid-stream. The transport has already
+   * returned 200 by then, so this frame is the only signal that the turn
+   * failed rather than simply ending.
+   */
+  error?: { message?: string; type?: string; code?: number | string };
   usage?: CompletionUsage;
   choices?: Array<{
     delta?: { content?: string; reasoning?: string; role?: Role };
@@ -245,6 +251,8 @@ export interface StreamDelta {
 
 export interface CompletionResponse {
   model?: string;
+  /** Present when a provider reports a failure under a 200 response. */
+  error?: { message?: string; type?: string; code?: number | string };
   choices?: Array<{ message?: { content?: string; reasoning?: string } }>;
   usage?: CompletionUsage;
 }
