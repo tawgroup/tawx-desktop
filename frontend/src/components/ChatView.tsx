@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type KeyboardEvent, type WheelEvent } from 'react';
+import { distanceFromBottom, isUpwardKey, shouldFollow } from '../lib/autoscroll.ts';
 import { useChats } from '../store/useChats';
 import MessageBubble from './MessageBubble';
 import { IconLock, IconRefresh } from './Icons';
@@ -69,7 +70,6 @@ export default function ChatView({ mode }: { mode: AppMode }) {
   const respondToApproval = useChats((s) => s.respondToApproval);
   const undoTask = useChats((s) => s.undoTask);
 
-  const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const task = mode === 'chat' ? null : activeTask;
@@ -83,19 +83,39 @@ export default function ChatView({ mode }: { mode: AppMode }) {
   const eventCount = task?.events.length ?? 0;
   const taskActive = task !== null && (task.status === 'planning' || task.status === 'running' || task.status === 'waiting_approval');
 
+  /** Scrolls the transcript itself, not every scrollable ancestor. */
+  const scrollToBottom = () => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  };
+
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    pinned.current = shouldFollow({ distance: distanceFromBottom(el) });
+  };
+
+  // Gestures are handled separately from `scroll` because they are synchronous:
+  // waiting for the scroll event lets a streamed token re-pin first and cancel
+  // the reader's own scroll.
+  const onWheel = (event: WheelEvent<HTMLDivElement>) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinned.current = shouldFollow({ distance: distanceFromBottom(el), gestureDeltaY: event.deltaY });
+  };
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!isUpwardKey(event.key)) return;
+    pinned.current = false;
   };
 
   useEffect(() => {
-    if (pinned.current) endRef.current?.scrollIntoView({ block: 'end' });
+    if (pinned.current) scrollToBottom();
   }, [messages, eventCount]);
 
   useEffect(() => {
     pinned.current = true;
-    endRef.current?.scrollIntoView({ block: 'end' });
+    scrollToBottom();
   }, [activeChatId]);
 
   const canRegenerate =
@@ -173,7 +193,14 @@ export default function ChatView({ mode }: { mode: AppMode }) {
   if (usageSummary && task?.usage.cost !== undefined) usageSummary += ` · $${task.usage.cost.toFixed(4)}`;
 
   return (
-    <div ref={scrollRef} onScroll={onScroll} className="scrollbar-thin flex-1 overflow-y-auto">
+    <div
+      ref={scrollRef}
+      onScroll={onScroll}
+      onWheel={onWheel}
+      onKeyDown={onKeyDown}
+      tabIndex={-1}
+      className="scrollbar-thin flex-1 overflow-y-auto [overflow-anchor:none]"
+    >
       {messages.map((message) => (
         <MessageBubble key={message.id} message={message} isStreaming={streaming && message.id === streamingId} />
       ))}
@@ -239,7 +266,7 @@ export default function ChatView({ mode }: { mode: AppMode }) {
         </div>
       )}
 
-      <div ref={endRef} className="h-4" />
+      <div className="h-4" />
     </div>
   );
 }
