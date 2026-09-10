@@ -10,6 +10,8 @@ import { IconCheck, IconCopy } from './Icons';
 interface Props {
   message: Message;
   isStreaming: boolean;
+  onReanalyzeVision?: () => void;
+  visionCost?: number;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -106,110 +108,48 @@ function extractText(node: React.ReactNode): string {
   return '';
 }
 
-function MessageBubble({ message, isStreaming }: Props) {
-  const isUser = message.role === 'user';
+function MessageBubble({ message, isStreaming, onReanalyzeVision, visionCost }: Props) { const isUser = message.role === 'user';
 
-  if (isUser) {
-    return (
-      <div className="group w-full animate-fade-in">
-        <div className="mx-auto flex max-w-3xl justify-end px-4 py-3 sm:px-6">
-          <div className="flex min-w-0 flex-col items-end gap-1">
-            {message.attachments && message.attachments.length > 0 && (
-              <AttachmentTray attachments={message.attachments} />
-            )}
-            {message.content && (
-              <div className="content-text whitespace-pre-wrap break-words rounded-3xl rounded-tr-md
-                              bg-surface-100 px-4 py-2.5 text-[15px] leading-7
-                              dark:bg-surface-800">
-                {message.content}
-              </div>
-            )}
-            {!isStreaming && message.content && (
-              <div className="flex opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-                <CopyButton text={message.content} />
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const usageParts = [
-    message.inputTokens !== undefined ? `Input ${message.inputTokens.toLocaleString()} tokens` : undefined,
-    message.outputTokens !== undefined ? `Output ${message.outputTokens.toLocaleString()} tokens` : undefined,
-    message.cost !== undefined
-      ? `Cost ${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 8 }).format(message.cost)}`
-      : undefined,
-  ].filter((part): part is string => part !== undefined);
-
+if (isUser) {
   return (
-    <div className="group w-full animate-fade-in px-4 py-3 sm:px-6">
-      <div className="mx-auto flex max-w-3xl gap-3 sm:gap-4">
-        <div
-          className="flex h-7 w-7 shrink-0 select-none items-center justify-center rounded-full
-                     border border-surface-300 text-xs font-semibold text-surface-600
-                     dark:border-surface-600 dark:text-surface-300"
-          aria-hidden
-        >
-          AI
-        </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="mb-1 flex items-center gap-2">
-            <span className="text-sm font-semibold">Assistant</span>
-            {(message.providerName || message.model) && (
-              <span className="truncate text-xs text-surface-700/50 dark:text-surface-200/40">
-                {[message.providerName, message.model].filter(Boolean).join(' · ')}
-              </span>
-            )}
-          </div>
-
-          {message.reasoning && (
-            <details className="mb-3 rounded-lg border border-surface-200 px-3 py-2 text-sm dark:border-surface-700">
+    <div className="group w-full animate-fade-in">
+      <div className="mx-auto flex max-w-3xl justify-end px-4 py-3 sm:px-6">
+        <div className="flex min-w-0 flex-col items-end gap-1">
+          {message.attachments && message.attachments.length > 0 && (
+            <AttachmentTray attachments={message.attachments} />
+          )}
+          {message.visionAnalysis && (
+            <details className="max-w-2xl rounded-lg border border-surface-200 px-3 py-2 text-left text-xs dark:border-surface-700">
               <summary className="cursor-pointer select-none text-surface-500 dark:text-surface-400">
-                Thinking
+                Analyzed by {message.visionAnalysis.providerName} · {message.visionAnalysis.model}
               </summary>
               <div className="mt-2 whitespace-pre-wrap text-surface-600 dark:text-surface-300">
-                {message.reasoning}
+                {message.visionAnalysis.text}
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-surface-200 pt-2 text-[11px] text-surface-500 dark:border-surface-700">
+                <span>{new Date(message.visionAnalysis.createdAt).toLocaleString()}</span>
+                {message.visionAnalysis.inputTokens !== undefined && <span>Input {message.visionAnalysis.inputTokens.toLocaleString()} tokens</span>}
+                {message.visionAnalysis.outputTokens !== undefined && <span>Output {message.visionAnalysis.outputTokens.toLocaleString()} tokens</span>}
+                {message.visionAnalysis.cost !== undefined && (
+                  <span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 8 }).format(message.visionAnalysis.cost)}</span>
+                )}
+                {onReanalyzeVision && (
+                  <button type="button" onClick={onReanalyzeVision} className="font-medium text-accent hover:underline">
+                    Re-analyze
+                  </button>
+                )}
               </div>
             </details>
           )}
-
-          <div className={cn('prose-chat', isStreaming && !message.content && 'caret')}>
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeHighlight]}
-              components={{
-                a: ({ ...props }) => <a {...props} target="_blank" rel="noreferrer noopener" />,
-                pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-              }}
-            >
+          {message.content && (
+            <div className="content-text whitespace-pre-wrap break-words rounded-3xl rounded-tr-md
+                            bg-surface-100 px-4 py-2.5 text-[15px] leading-7
+                            dark:bg-surface-800">
               {message.content}
-            </ReactMarkdown>
-            {isStreaming && message.content && (
-              <span className="ml-0.5 inline-block animate-blink text-accent">▍</span>
-            )}
-          </div>
-
-          {message.error && (
-            <div
-              role="alert"
-              className="mt-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm
-                         text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
-            >
-              {message.error}
             </div>
           )}
-
-          {usageParts.length > 0 && (
-            <div className="mt-2 text-xs text-surface-500 dark:text-surface-400">
-              {usageParts.join(' · ')}
-            </div>
-          )}
-
           {!isStreaming && message.content && (
-            <div className="mt-2 flex opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+            <div className="flex opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
               <CopyButton text={message.content} />
             </div>
           )}
@@ -218,6 +158,93 @@ function MessageBubble({ message, isStreaming }: Props) {
     </div>
   );
 }
+
+const costFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 8 });
+const usageParts = [
+  message.inputTokens !== undefined ? `Input ${message.inputTokens.toLocaleString()} tokens` : undefined,
+  message.outputTokens !== undefined ? `Output ${message.outputTokens.toLocaleString()} tokens` : undefined,
+  message.cost !== undefined
+    ? `${visionCost === undefined ? 'Cost' : 'Chat cost'} ${costFormatter.format(message.cost)}`
+    : undefined,
+  message.cost !== undefined && visionCost !== undefined
+    ? `Total ${costFormatter.format(message.cost + visionCost)}`
+    : undefined,
+].filter((part): part is string => part !== undefined);
+
+return (
+  <div className="group w-full animate-fade-in px-4 py-3 sm:px-6">
+    <div className="mx-auto flex max-w-3xl gap-3 sm:gap-4">
+      <div
+        className="flex h-7 w-7 shrink-0 select-none items-center justify-center rounded-full
+                   border border-surface-300 text-xs font-semibold text-surface-600
+                   dark:border-surface-600 dark:text-surface-300"
+        aria-hidden
+      >
+        AI
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-sm font-semibold">Assistant</span>
+          {(message.providerName || message.model) && (
+            <span className="truncate text-xs text-surface-700/50 dark:text-surface-200/40">
+              {[message.providerName, message.model].filter(Boolean).join(' · ')}
+            </span>
+          )}
+        </div>
+
+        {message.reasoning && (
+          <details className="mb-3 rounded-lg border border-surface-200 px-3 py-2 text-sm dark:border-surface-700">
+            <summary className="cursor-pointer select-none text-surface-500 dark:text-surface-400">
+              Thinking
+            </summary>
+            <div className="mt-2 whitespace-pre-wrap text-surface-600 dark:text-surface-300">
+              {message.reasoning}
+            </div>
+          </details>
+        )}
+
+        <div className={cn('prose-chat', isStreaming && !message.content && 'caret')}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeHighlight]}
+            components={{
+              a: ({ ...props }) => <a {...props} target="_blank" rel="noreferrer noopener" />,
+              pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+            }}
+          >
+            {message.content}
+          </ReactMarkdown>
+          {isStreaming && message.content && (
+            <span className="ml-0.5 inline-block animate-blink text-accent">▍</span>
+          )}
+        </div>
+
+        {message.error && (
+          <div
+            role="alert"
+            className="mt-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm
+                       text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
+          >
+            {message.error}
+          </div>
+        )}
+
+        {usageParts.length > 0 && (
+          <div className="mt-2 text-xs text-surface-500 dark:text-surface-400">
+            {usageParts.join(' · ')}
+          </div>
+        )}
+
+        {!isStreaming && message.content && (
+          <div className="mt-2 flex opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+            <CopyButton text={message.content} />
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+); }
 
 // Streaming re-renders the active message on every token; memoising keeps the
 // rest of the transcript from re-rendering with it.

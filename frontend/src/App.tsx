@@ -385,7 +385,7 @@ export default function App() {
         ) : (
           <>
             <ChatView mode={mode} />
-            <Composer mode={mode} />
+            <Composer mode={mode} onOpenSettings={openSettings} />
           </>
         )}
         <StatusLine

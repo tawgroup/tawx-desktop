@@ -90,6 +90,7 @@ interface StreamOptions {
   temperature?: number;
   maxTokens?: number | null;
   signal?: AbortSignal;
+  reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high';
   onToken: (token: string) => void;
   onModel?: (model: string) => void;
   onReasoning?: (token: string) => void;
@@ -113,7 +114,7 @@ function normalizeCompletionUsage(usage?: CompletionUsage): NormalizedCompletion
   return Object.values(normalized).some((value) => value !== undefined) ? normalized : undefined;
 }
 
-export function completionBody(options: Pick<StreamOptions, 'model' | 'messages' | 'temperature' | 'maxTokens' | 'webSearch'>, stream: boolean) {
+export function completionBody(options: Pick<StreamOptions, 'model' | 'messages' | 'temperature' | 'maxTokens' | 'reasoningEffort' | 'webSearch'>, stream: boolean) {
   return {
     model: options.model,
     messages: options.messages,
@@ -121,6 +122,7 @@ export function completionBody(options: Pick<StreamOptions, 'model' | 'messages'
     ...(stream ? { stream_options: { include_usage: true } } : {}),
     ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
     ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+    ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
     ...(options.webSearch ? {
       tools: [{
         type: 'openrouter:web_search',
@@ -144,6 +146,7 @@ export async function streamCompletion({
   temperature,
   maxTokens,
   signal,
+  reasoningEffort,
   onToken,
   onModel,
   onReasoning,
@@ -154,7 +157,7 @@ export async function streamCompletion({
     method: 'POST',
     headers: headers(provider),
     signal,
-    body: JSON.stringify(completionBody({ model, messages, temperature, maxTokens, webSearch }, true)),
+    body: JSON.stringify(completionBody({ model, messages, temperature, maxTokens, reasoningEffort, webSearch }, true)),
   });
 
   if (!res.ok) throw new ApiError(await parseError(res), res.status);
@@ -219,13 +222,14 @@ export async function fetchCompletion({
   temperature,
   maxTokens,
   signal,
+  reasoningEffort,
   webSearch,
 }: Omit<StreamOptions, 'onToken' | 'onModel' | 'onReasoning' | 'onUsage'>): Promise<{ content: string; model?: string; reasoning?: string; usage?: NormalizedCompletionUsage }> {
   const res = await fetch(proxyUrl(provider.baseUrl, '/chat/completions'), {
     method: 'POST',
     headers: headers(provider),
     signal,
-    body: JSON.stringify(completionBody({ model, messages, temperature, maxTokens, webSearch }, false)),
+    body: JSON.stringify(completionBody({ model, messages, temperature, maxTokens, reasoningEffort, webSearch }, false)),
   });
 
   if (!res.ok) throw new ApiError(await parseError(res), res.status);

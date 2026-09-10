@@ -62,6 +62,7 @@ export default function ChatView({ mode }: { mode: AppMode }) {
   const streaming = useChats((s) => s.streaming);
   const streamingId = useChats((s) => s.streamingId);
   const regenerate = useChats((s) => s.regenerate);
+  const reanalyzeVision = useChats((s) => s.reanalyzeVision);
   const activeChatId = useChats((s) => s.activeChatId);
   const activeTask = useChats((s) => s.activeTask);
   const send = useChats((s) => s.send);
@@ -202,7 +203,17 @@ export default function ChatView({ mode }: { mode: AppMode }) {
       className="scrollbar-thin flex-1 overflow-y-auto [overflow-anchor:none]"
     >
       {messages.map((message) => (
-        <MessageBubble key={message.id} message={message} isStreaming={streaming && message.id === streamingId} />
+        <MessageBubble
+          key={message.id}
+          message={message}
+          isStreaming={streaming && message.id === streamingId}
+          visionCost={message.role === 'assistant'
+            ? messages.findLast((candidate) => candidate.role === 'user' && candidate.createdAt < message.createdAt)?.visionAnalysis?.cost
+            : undefined}
+          onReanalyzeVision={!streaming && message.visionAnalysis
+            ? () => void reanalyzeVision(message.id)
+            : undefined}
+        />
       ))}
 
       {task && (

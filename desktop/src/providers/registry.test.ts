@@ -126,7 +126,7 @@ test('PATCH keeps, clears or replaces the key by whether apiKey is present', asy
 test('changing the upstream address invalidates a previous probe', async () => {
   const upstream = await startTestServer((_req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end('{"object":"list","data":[{"id":"m1"},{"id":"m2"}]}');
+    res.end('{"object":"list","data":[{"id":"m1","architecture":{"input_modalities":["text","image"]}},{"id":"m2","architecture":{"input_modalities":["text"]}}]}');
   });
   const { runtime, cleanup } = await open();
 
@@ -141,9 +141,12 @@ test('changing the upstream address invalidates a previous probe', async () => {
     const tested = await runtime.test('lmstudio');
     assert.equal(tested.connectionStatus, 'connected');
     assert.deepEqual(tested.discoveredModels, ['m1', 'm2']);
+    assert.deepEqual(tested.visionModels, ['m1']);
 
     const moved = await runtime.update('lmstudio', { baseUrl: 'http://127.0.0.1:1' });
     assert.equal(moved.connectionStatus, 'untested');
+    assert.deepEqual(moved.discoveredModels, []);
+    assert.deepEqual(moved.visionModels, []);
     assert.equal(moved.lastError, undefined);
   } finally {
     await cleanup();

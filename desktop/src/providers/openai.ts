@@ -17,6 +17,8 @@ const DEFAULT_BASE_URL = 'https://api.openai.com';
 export interface OpenAiOptions {
   apiKey: string;
   baseUrl?: string;
+  /** Path between the provider base URL and OpenAI-compatible resource names. */
+  apiPrefix?: string;
   /** Injected for tests and for providers that tunnel through a proxy. */
   fetchImpl?: typeof fetch;
 }
@@ -25,10 +27,12 @@ export class OpenAiProvider implements Provider {
   protected readonly apiKey: string;
   protected readonly baseUrl: string;
   protected readonly fetchImpl: typeof fetch;
+  protected readonly apiPrefix: string;
 
   constructor(options: OpenAiOptions) {
     this.apiKey = options.apiKey;
     this.baseUrl = options.baseUrl || DEFAULT_BASE_URL;
+    this.apiPrefix = options.apiPrefix ?? '/v1';
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -45,7 +49,7 @@ export class OpenAiProvider implements Provider {
     req: ChatCompletionRequest,
     signal?: AbortSignal,
   ): Promise<ChatCompletionResponse> {
-    const res = await this.fetchImpl(`${this.baseUrl}/v1/chat/completions`, {
+    const res = await this.fetchImpl(`${this.baseUrl}${this.apiPrefix}/chat/completions`, {
       method: 'POST',
       headers: this.headers(),
       body: serializeRequest(req, false),
@@ -69,7 +73,7 @@ export class OpenAiProvider implements Provider {
     req: ChatCompletionRequest,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamChunk> {
-    const res = await this.fetchImpl(`${this.baseUrl}/v1/chat/completions`, {
+    const res = await this.fetchImpl(`${this.baseUrl}${this.apiPrefix}/chat/completions`, {
       method: 'POST',
       headers: this.headers({ Accept: 'text/event-stream' }),
       body: serializeRequest(req, true),
@@ -85,7 +89,7 @@ export class OpenAiProvider implements Provider {
   }
 
   async listModels(signal?: AbortSignal): Promise<Model[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/v1/models`, {
+    const res = await this.fetchImpl(`${this.baseUrl}${this.apiPrefix}/models`, {
       headers: { Authorization: `Bearer ${this.apiKey}` },
       signal,
     });

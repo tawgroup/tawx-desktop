@@ -1,4 +1,4 @@
-import type { Provider, ProviderAuthKind, ProviderKind } from '../types.ts';
+import type { ModelInfo, Provider, ProviderAuthKind, ProviderKind } from '../types.ts';
 
 export interface ProviderPreset {
   id: string;
@@ -20,15 +20,22 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: 'openrouter', name: 'OpenRouter', kind: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', authKind: 'bearer', model: 'openai/gpt-4o-mini' },
   { id: 'openai', name: 'OpenAI', kind: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', authKind: 'bearer', model: 'gpt-4o-mini' },
   { id: 'deepseek', name: 'DeepSeek', kind: 'openai-compatible', baseUrl: 'https://api.deepseek.com/v1', authKind: 'bearer', model: 'deepseek-chat' },
+  { id: 'google', name: 'Google Gemini', kind: 'google', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', authKind: 'bearer', model: 'gemini-3.1-flash-lite' },
   { id: 'groq', name: 'Groq', kind: 'openai-compatible', baseUrl: 'https://api.groq.com/openai/v1', authKind: 'bearer', model: 'llama-3.3-70b-versatile' },
   { id: 'together', name: 'Together AI', kind: 'openai-compatible', baseUrl: 'https://api.together.xyz/v1', authKind: 'bearer', model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo' },
   { id: 'ollama', name: 'Ollama', kind: 'ollama', baseUrl: 'http://localhost:11434/v1', authKind: 'none', model: 'llama3.2' },
   { id: 'lm-studio', name: 'LM Studio', kind: 'openai-compatible', baseUrl: 'http://localhost:1234/v1', authKind: 'none', model: 'local-model' },
 ];
+export function visionModelIds(models: readonly ModelInfo[]): string[] {
+  return models
+    .filter((model) => model.architecture?.input_modalities?.includes('image'))
+    .map((model) => model.id);
+}
 
 function inferKind(baseUrl: string, id: string): ProviderKind {
   if (id === 'gateway' || baseUrl.startsWith('/')) return 'gateway';
   if (baseUrl.includes('openrouter.ai')) return 'openrouter';
+  if (id === 'google' || baseUrl.includes('generativelanguage.googleapis.com')) return 'google';
   if (baseUrl.includes('localhost:11434') || baseUrl.includes('127.0.0.1:11434')) return 'ollama';
   return 'openai-compatible';
 }
@@ -36,12 +43,14 @@ function inferKind(baseUrl: string, id: string): ProviderKind {
 export function normalizeProvider(provider: Partial<Provider> & Pick<Provider, 'id' | 'name' | 'baseUrl' | 'apiKey' | 'model'>): Provider {
   const kind = provider.kind ?? inferKind(provider.baseUrl, provider.id);
   const discoveredModels = Array.from(new Set([...(provider.discoveredModels ?? []), provider.model].filter(Boolean)));
+  const visionModels = Array.from(new Set(provider.visionModels ?? []));
   return {
     ...provider,
     kind,
     authKind: provider.authKind ?? (kind === 'gateway' || kind === 'ollama' || !provider.apiKey ? 'none' : 'bearer'),
     enabled: provider.enabled ?? true,
     discoveredModels,
+    visionModels,
     connectionStatus: provider.connectionStatus ?? (kind === 'gateway' ? 'connected' : 'untested'),
   };
 }
@@ -117,6 +126,7 @@ export function providerKindLabel(kind: ProviderKind): string {
   switch (kind) {
     case 'gateway': return 'Managed gateway';
     case 'openrouter': return 'OpenRouter';
+    case 'google': return 'Google Gemini';
     case 'ollama': return 'Ollama';
     case 'anthropic': return 'Anthropic';
     default: return 'OpenAI-compatible';

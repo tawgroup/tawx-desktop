@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AnthropicProvider } from './anthropic.js';
 import { ApiError } from './errors.js';
+import { GoogleProvider } from './google.js';
 import { LocalProvider } from './local.js';
 import { OpenAiProvider } from './openai.js';
 import { OpenRouterProvider } from './openrouter.js';
@@ -11,6 +12,7 @@ test('every kind constructs its adapter', () => {
   const spec = { apiKey: 'k', baseUrl: 'https://example.test/v1' };
 
   assert.ok(createProvider(ProviderKind.OpenAiCompatible, spec) instanceof OpenAiProvider);
+  assert.ok(createProvider(ProviderKind.Google, spec) instanceof GoogleProvider);
   assert.ok(createProvider(ProviderKind.OpenRouter, spec) instanceof OpenRouterProvider);
   assert.ok(createProvider(ProviderKind.Anthropic, spec) instanceof AnthropicProvider);
   assert.ok(createProvider(ProviderKind.Ollama, spec) instanceof LocalProvider);
@@ -29,6 +31,7 @@ test('the kind list and the constructor record stay in step', () => {
   assert.deepEqual(providerKinds().sort(), Object.keys(PROVIDER_KINDS).sort());
   assert.deepEqual(providerKinds().sort(), [
     'anthropic',
+    'google',
     'ollama',
     'openai-compatible',
     'openrouter',

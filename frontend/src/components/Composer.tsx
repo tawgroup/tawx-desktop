@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchModels } from '../lib/api';
 import { ATTACHMENT_ACCEPT, prepareAttachments } from '../lib/attachments';
-import { isProviderRoutable, modelRoutes } from '../lib/providers.ts';
+import { isProviderRoutable, modelRoutes, visionModelIds } from '../lib/providers.ts';
+import { configuredVisionRoute, needsVisionFallback } from '../lib/vision.ts';
 import { useChats } from '../store/useChats';
 import { useSettings } from '../store/useSettings';
 import type { AppMode, ThreadPolicy } from '../types';
@@ -9,8 +10,13 @@ import AttachmentTray from './AttachmentTray';
 import { IconSend, IconStop } from './Icons';
 
 const MAX_HEIGHT = 200;
+interface Props {
+  mode: AppMode;
+  onOpenSettings: () => void;
+}
 
-export default function Composer({ mode }: { mode: AppMode }) {
+
+export default function Composer({ mode, onOpenSettings }: Props) {
   const [text, setText] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -27,6 +33,7 @@ export default function Composer({ mode }: { mode: AppMode }) {
   const send = useChats((s) => s.send);
   const stop = useChats((s) => s.stop);
   const streaming = useChats((s) => s.streaming);
+  const visionProgress = useChats((s) => s.visionProgress);
   const activeChatId = useChats((s) => s.activeChatId);
   const attachments = useChats((s) => s.attachments);
   const addAttachments = useChats((s) => s.addAttachments);
@@ -56,6 +63,9 @@ export default function Composer({ mode }: { mode: AppMode }) {
   const hasProvider = provider !== null;
   const canCompose = mode !== 'chat' || hasProvider;
   const webSupported = provider?.kind === 'openrouter' || (provider?.model.startsWith('openrouter/') ?? false);
+  const hasPendingImages = attachments.some((attachment) => attachment.kind === 'image');
+  const visionFallbackNeeded = hasPendingImages && needsVisionFallback(mode, settings, provider);
+  const visionRoute = configuredVisionRoute(settings);
 
   // Grow with content up to a cap, then scroll internally.
   useEffect(() => {
@@ -94,6 +104,7 @@ export default function Composer({ mode }: { mode: AppMode }) {
           setModelSource(providerSource);
           await updateProvider(provider.id, {
             discoveredModels: items.map((item) => item.id),
+            visionModels: visionModelIds(items),
             connectionStatus: 'connected',
             lastCheckedAt: Date.now(),
             lastError: undefined,
@@ -117,9 +128,13 @@ export default function Composer({ mode }: { mode: AppMode }) {
   const submit = () => {
     const value = text.trim();
     if ((!value && !attachments.length) || streaming || preparingAttachments) return;
-    setText('');
     setAttachmentErrors([]);
-    void send(value, mode);
+    const submitted = text;
+    const accepted = send(value, mode);
+    if (visionFallbackNeeded && !visionRoute) onOpenSettings();
+    void accepted.then((sent) => {
+      if (sent) setText((current) => (current === submitted ? '' : current));
+    });
   };
 
   const addFiles = async (files: readonly File[]) => {
@@ -199,6 +214,30 @@ export default function Composer({ mode }: { mode: AppMode }) {
                 {attachmentErrors.map((error, index) => <li key={`${index}-${error}`}>{error}</li>)}
               </ul>
             </div>
+          )}
+          {visionFallbackNeeded && (
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className={`mb-2 rounded-full px-2.5 py-1 text-xs ${
+                visionRoute
+                  ? 'bg-accent/10 font-medium text-accent'
+                  : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+              }`}
+              title={visionRoute
+                ? `Images will be analyzed by ${visionRoute.provider.name} before the destination model receives text.`
+                : 'Configure a Vision fallback before sending images to this model.'}
+            >
+              {visionRoute
+                ? `Images via ${visionRoute.provider.name} · ${settings.visionModel}`
+                : 'Configure Vision fallback'}
+            </button>
+          )}
+          {visionProgress && (
+            <p role="status" aria-live="polite" className="mb-2 px-1 text-xs font-medium text-accent">
+              Analyzing images with {visionProgress.providerName} · {visionProgress.model}
+              {' '}({visionProgress.completed}/{visionProgress.total})…
+            </p>
           )}
           <textarea
             ref={ref}
@@ -359,7 +398,7 @@ export default function Composer({ mode }: { mode: AppMode }) {
             {streaming ? (
               <button onClick={stop} className="shrink-0 rounded-full bg-surface-900 p-2 text-white
                                            transition-opacity hover:opacity-80 dark:bg-surface-100
-                                           dark:text-surface-900" title="Stop generating" aria-label="Stop generating">
+                                           dark:text-surface-900" title={visionProgress ? 'Stop image analysis' : 'Stop generating'} aria-label={visionProgress ? 'Stop image analysis' : 'Stop generating'}>
                 <IconStop className="h-5 w-5" />
               </button>
             ) : (

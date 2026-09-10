@@ -1,8 +1,14 @@
 import { useState } from 'react';
 import { ApiError, fetchModels } from '../lib/api.ts';
-import { PROVIDER_PRESETS, providerKindLabel, validateProviderBaseUrl } from '../lib/providers.ts';
+import { PROVIDER_PRESETS, isProviderRoutable, providerKindLabel, validateProviderBaseUrl, visionModelIds } from '../lib/providers.ts';
 import { useSettings } from '../store/useSettings.ts';
-import type { Provider } from '../types.ts';
+import {
+  configuredModelCapability,
+  DEFAULT_VISION_MODEL,
+  modelRouteKey,
+  testVisionRoute,
+} from '../lib/vision.ts';
+import type { ModelCapability, Provider } from '../types.ts';
 import { IconPlus, IconSpinner, IconTrash } from './Icons';
 
 type ProviderDraft = Omit<Provider, 'id'>;
@@ -16,6 +22,7 @@ const EMPTY: ProviderDraft = {
   enabled: true,
   model: '',
   discoveredModels: [],
+  visionModels: [],
   connectionStatus: 'untested',
 };
 
@@ -50,6 +57,7 @@ function statusLabel(provider: Provider): string {
 
 export default function ProviderSettings() {
   const settings = useSettings((state) => state.settings);
+  const update = useSettings((state) => state.update);
   const providerBackend = useSettings((state) => state.providerBackend);
   const addProvider = useSettings((state) => state.addProvider);
   const updateProvider = useSettings((state) => state.updateProvider);
@@ -60,6 +68,22 @@ export default function ProviderSettings() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const [visionTesting, setVisionTesting] = useState(false);
+  const [visionFeedback, setVisionFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const routableProviders = settings.providers.filter(isProviderRoutable);
+  const visionProvider = routableProviders.find((provider) => provider.id === settings.visionProviderId) ?? null;
+  const visionModels = visionProvider
+    ? Array.from(new Set([visionProvider.model, ...visionProvider.discoveredModels].filter(Boolean)))
+    : [];
+  const activeProvider = routableProviders.find((provider) => provider.id === settings.activeProviderId)
+    ?? routableProviders[0]
+    ?? null;
+  const activeCapabilityOverride = activeProvider
+    ? settings.modelCapabilityOverrides[modelRouteKey(activeProvider.id, activeProvider.model)] ?? 'auto'
+    : 'auto';
+  const activeCapability = activeProvider
+    ? configuredModelCapability(settings, activeProvider)
+    : 'text-only';
 
   const managed = providerBackend === 'desktop';
 
@@ -86,14 +110,18 @@ export default function ProviderSettings() {
       apiKey: preset.authKind === 'none' ? '' : (current?.apiKey ?? ''),
       connectionStatus: 'untested',
       discoveredModels: [],
+      visionModels: [],
       lastCheckedAt: undefined,
       lastError: undefined,
     }));
   };
 
-  const probe = async (provider: Provider): Promise<string[]> => {
-    const models = (await fetchModels(provider)).map((model) => model.id).sort();
-    return Array.from(new Set(models));
+  const probe = async (provider: Provider) => {
+    const items = await fetchModels(provider);
+    return {
+      discoveredModels: Array.from(new Set(items.map((model) => model.id))).sort(),
+      visionModels: Array.from(new Set(visionModelIds(items))).sort(),
+    };
   };
 
   const checkSaved = async (provider: Provider) => {
@@ -105,10 +133,10 @@ export default function ProviderSettings() {
         return;
       }
       await updateProvider(provider.id, { connectionStatus: 'testing', lastError: undefined });
-      const discoveredModels = await probe(provider);
+      const catalog = await probe(provider);
       await updateProvider(provider.id, {
         connectionStatus: 'connected',
-        discoveredModels,
+        ...catalog,
         lastCheckedAt: Date.now(),
         lastError: undefined,
       });
@@ -201,7 +229,9 @@ export default function ProviderSettings() {
     if (testFirst) {
       setTestingId(provider.id);
       try {
-        provider.discoveredModels = await probe(provider);
+        const catalog = await probe(provider);
+        provider.discoveredModels = catalog.discoveredModels;
+        provider.visionModels = catalog.visionModels;
         provider.connectionStatus = 'connected';
         provider.lastCheckedAt = Date.now();
         setFeedback({ ok: true, message: `Connected — ${provider.discoveredModels.length} models available.` });
@@ -240,6 +270,49 @@ export default function ProviderSettings() {
     if (confirm(warning)) {
       await removeProvider(provider.id);
       if (editingId === provider.id) setDraft(null);
+    }
+  };
+
+  const selectVisionProvider = async (providerId: string) => {
+    const provider = routableProviders.find((candidate) => candidate.id === providerId);
+    if (!provider) {
+      await update({ visionProviderId: null });
+      return;
+    }
+    const models = Array.from(new Set([provider.model, ...provider.discoveredModels].filter(Boolean)));
+    const shortDefault = DEFAULT_VISION_MODEL.split('/').at(-1)!;
+    const preferred = models.find((model) =>
+      model === DEFAULT_VISION_MODEL
+      || model === shortDefault
+      || model.endsWith(`/${DEFAULT_VISION_MODEL}`))
+      ?? provider.visionModels[0]
+      ?? provider.model;
+    await update({ visionProviderId: provider.id, visionModel: preferred });
+    setVisionFeedback(null);
+  };
+
+  const setActiveCapability = async (value: ModelCapability) => {
+    if (!activeProvider) return;
+    const key = modelRouteKey(activeProvider.id, activeProvider.model);
+    const overrides = { ...settings.modelCapabilityOverrides };
+    if (value === 'auto') delete overrides[key];
+    else overrides[key] = value;
+    await update({ modelCapabilityOverrides: overrides });
+  };
+
+  const testVision = async () => {
+    setVisionTesting(true);
+    setVisionFeedback(null);
+    const started = performance.now();
+    try {
+      const analysis = await testVisionRoute(useSettings.getState().settings);
+      const elapsed = ((performance.now() - started) / 1000).toFixed(2);
+      const cost = analysis.cost === undefined ? 'usage unavailable' : `$${analysis.cost.toFixed(8)}`;
+      setVisionFeedback({ ok: true, message: `Image read correctly in ${elapsed}s · ${cost}.` });
+    } catch (error) {
+      setVisionFeedback({ ok: false, message: connectionError(error) });
+    } finally {
+      setVisionTesting(false);
     }
   };
 
@@ -327,6 +400,78 @@ export default function ProviderSettings() {
           </div>
         </div>
       )}
+
+      <div className="mt-6 border-t border-surface-200 pt-5 dark:border-surface-700">
+        <h4 className="text-sm font-semibold">Vision fallback</h4>
+        <p className="mt-1 text-xs leading-5 text-surface-500">
+          When the destination model is text-only or unknown, images are analyzed by this route first.
+          The composer shows the second provider before anything is sent.
+        </p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="label" htmlFor="vision-provider">Provider</label>
+            <select
+              id="vision-provider"
+              className="input"
+              value={settings.visionProviderId ?? ''}
+              onChange={(event) => void selectVisionProvider(event.target.value)}
+            >
+              <option value="">Not configured</option>
+              {routableProviders.map((provider) => (
+                <option key={provider.id} value={provider.id}>{provider.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label" htmlFor="vision-model">Vision model</label>
+            <input
+              id="vision-model"
+              className="input"
+              list="vision-models"
+              disabled={!visionProvider}
+              value={settings.visionModel}
+              onChange={(event) => void update({ visionModel: event.target.value })}
+              placeholder={DEFAULT_VISION_MODEL}
+            />
+            <datalist id="vision-models">
+              {visionModels.map((model) => <option key={model} value={model} />)}
+            </datalist>
+          </div>
+        </div>
+        {activeProvider && (
+          <div className="mt-3">
+            <label className="label" htmlFor="active-model-capability">
+              {activeProvider.name} · {activeProvider.model} image capability
+            </label>
+            <select
+              id="active-model-capability"
+              className="input"
+              value={activeCapabilityOverride}
+              onChange={(event) => void setActiveCapability(event.target.value as ModelCapability)}
+            >
+              <option value="auto">Auto ({activeCapability === 'vision' ? 'Vision from metadata' : 'unknown → text-only'})</option>
+              <option value="vision">Vision</option>
+              <option value="text-only">Text-only</option>
+            </select>
+          </div>
+        )}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={!visionProvider || !settings.visionModel.trim() || visionTesting}
+            onClick={() => void testVision()}
+          >
+            {visionTesting && <IconSpinner className="h-4 w-4" />}
+            Test with image
+          </button>
+          {visionFeedback && (
+            <p role="status" className={visionFeedback.ok ? 'text-xs text-green-600 dark:text-green-400' : 'text-xs text-red-600 dark:text-red-400'}>
+              {visionFeedback.message}
+            </p>
+          )}
+        </div>
+      </div>
     </section>
   );
 }

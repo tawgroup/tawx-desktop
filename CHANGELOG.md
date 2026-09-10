@@ -4,6 +4,8 @@
 
 FEATURE: The macOS desktop app now provides persistent Cowork and Code agents with native per-thread workspaces, iterative file/command/Git tools, inspectable prompts and context, approvals, todos, diffs, checkpoint undo, transcript attachments, skills, schedules, isolated browser automation, MCP tools, and persistent artifacts. Task state and audit history remain local and redact secrets before persistence or export; workspace containment, enabled-tool policy, and explicit gates for command, Git, browser, MCP, and other external or mutating actions remain enforced.
 
+FEATURE: Image attachments can now use a configurable vision fallback before Chat, Cowork, or Code sends context to a text-only model. Provider metadata and per-model overrides decide direct versus fallback delivery; the composer discloses cross-provider routing, analysis can be stopped without losing the draft, cached evidence is marked untrusted and remains inspectable with provenance, usage, and manual re-analysis, and Settings includes an image-capability test plus direct Google Gemini preset.
+
 FEATURE: Chat response footers now show input and output token counts alongside the request cost.
 
 FIX: Links in desktop chat responses now open in the system browser instead of creating an embedded Electron popup.

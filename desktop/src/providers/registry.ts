@@ -31,6 +31,7 @@ export interface ProviderView {
   enabled: boolean;
   model: string;
   discoveredModels: string[];
+  visionModels: string[];
   connectionStatus: ProviderConnectionStatus;
   lastError?: string;
   lastCheckedAt?: number;
@@ -107,6 +108,7 @@ export class ProviderRuntime {
       enabled: true,
       model: '',
       discoveredModels: [],
+      visionModels: [],
       connectionStatus: 'connected' as ProviderConnectionStatus,
       source: 'config' as const,
       readOnly: true,
@@ -136,6 +138,7 @@ export class ProviderRuntime {
       enabled: input.enabled ?? true,
       model: input.model?.trim() ?? '',
       discoveredModels: [],
+      visionModels: [],
       connectionStatus: 'untested',
       createdAt: now,
       updatedAt: now,
@@ -164,6 +167,8 @@ export class ProviderRuntime {
     // Anything that changes how the upstream is reached invalidates the probe.
     if (patch.kind !== undefined || patch.baseUrl !== undefined || patch.apiKey !== undefined) {
       next.connectionStatus = 'untested';
+      next.discoveredModels = [];
+      next.visionModels = [];
       delete next.lastError;
       delete next.lastCheckedAt;
     }
@@ -196,6 +201,9 @@ export class ProviderRuntime {
       next = {
         ...current,
         discoveredModels: models.map((model) => model.id),
+        visionModels: models
+          .filter((model) => model.architecture?.input_modalities?.includes('image'))
+          .map((model) => model.id),
         connectionStatus: 'connected',
         lastCheckedAt: Date.now(),
         updatedAt: Date.now(),
@@ -309,6 +317,7 @@ function toView(record: ProviderRecord): ProviderView {
     enabled: record.enabled,
     model: record.model,
     discoveredModels: record.discoveredModels,
+    visionModels: record.visionModels ?? [],
     connectionStatus: record.connectionStatus,
     source: 'user',
     readOnly: false,

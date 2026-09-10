@@ -52,6 +52,7 @@ function fromRemote(remote: RemoteProvider): Provider {
     enabled: remote.enabled,
     model: remote.model,
     discoveredModels: remote.discoveredModels,
+    visionModels: remote.visionModels ?? [],
     connectionStatus: remote.connectionStatus,
     ownership: 'managed',
     readOnly: remote.readOnly,
@@ -224,6 +225,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
       activeProviderId: settings.activeProviderId === id
         ? (providers.find(isProviderRoutable)?.id ?? '')
         : settings.activeProviderId,
+      visionProviderId: settings.visionProviderId === id ? null : settings.visionProviderId,
     };
     set({ settings: next });
     await persist(next);

@@ -38,6 +38,19 @@ export interface ContextBudget {
   summary?: string;
 }
 
+export interface VisionAnalysis {
+  text: string;
+  providerId: string;
+  providerName: string;
+  model: string;
+  attachmentIds: string[];
+  promptVersion: number;
+  createdAt: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cost?: number;
+}
+
 export interface Message {
   id: string;
   chatId: string;
@@ -46,6 +59,8 @@ export interface Message {
   /** Local project snapshot sent to the model but hidden from the chat transcript. */
   context?: string;
   attachments?: Attachment[];
+  /** Cached, hidden image evidence used when the destination model is text-only. */
+  visionAnalysis?: VisionAnalysis;
   taskId?: string;
   createdAt: number;
   /** Populated when the assistant turn failed; renders inline as an error bubble. */
@@ -89,9 +104,10 @@ export interface ThreadDraft {
 
 export const chatMode = (chat: Chat): AppMode => chat.mode ?? 'chat';
 
-export type ProviderKind = 'gateway' | 'openrouter' | 'openai-compatible' | 'ollama' | 'anthropic';
+export type ProviderKind = 'gateway' | 'openrouter' | 'openai-compatible' | 'google' | 'ollama' | 'anthropic';
 export type ProviderAuthKind = 'bearer' | 'none';
 export type ProviderConnectionStatus = 'untested' | 'testing' | 'connected' | 'error';
+export type ModelCapability = 'auto' | 'vision' | 'text-only';
 
 export interface Provider {
   id: string;
@@ -108,6 +124,8 @@ export interface Provider {
   enabled: boolean;
   model: string;
   discoveredModels: string[];
+  /** Models confirmed by provider metadata to accept image input. */
+  visionModels: string[];
   connectionStatus: ProviderConnectionStatus;
   lastCheckedAt?: number;
   lastError?: string;
@@ -127,6 +145,10 @@ export interface Provider {
 export interface Settings {
   providers: Provider[];
   activeProviderId: string | null;
+  visionProviderId: string | null;
+  visionModel: string;
+  /** Explicit per-route overrides; absent means use provider metadata, then text-only. */
+  modelCapabilityOverrides: Record<string, Exclude<ModelCapability, 'auto'>>;
   temperature: number;
   maxTokens: number | null;
   systemPrompt: string;
@@ -148,6 +170,9 @@ export type WebSearchEngine = 'auto' | 'exa' | 'parallel' | 'perplexity';
 export interface ModelInfo {
   id: string;
   owned_by?: string;
+  architecture?: {
+    input_modalities?: string[];
+  };
 }
 
 export interface ChatTextPart {
@@ -402,9 +427,13 @@ export const DEFAULT_SETTINGS: Settings = {
     enabled: true,
     model: 'auto',
     discoveredModels: ['auto'],
+    visionModels: [],
     connectionStatus: 'connected',
   }],
   activeProviderId: 'gateway',
+  visionProviderId: null,
+  visionModel: 'google/gemini-3.1-flash-lite',
+  modelCapabilityOverrides: {},
   temperature: 1,
   maxTokens: null,
   systemPrompt: '',

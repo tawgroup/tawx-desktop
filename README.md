@@ -67,6 +67,16 @@ codebase branches on vendor identity.
 `<providerId>/<model>`, so whatever it returns can be sent straight back as the
 `model` of a completion request.
 
+### Vision fallback
+
+Settings can route image attachments through a separate vision-capable model
+before a text-only destination model runs. The composer names that second
+provider before sending. The derived evidence is delimited as untrusted
+attachment data, cached with model and usage provenance, and available from the
+message disclosure for inspection or manual re-analysis. Provider model
+metadata selects direct multimodal delivery when available; unknown models
+default to text-only and can be overridden in Settings.
+
 ## Semantic routing
 
 When a request omits `model` or sends `auto`, a three-layer cascade picks one:

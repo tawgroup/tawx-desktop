@@ -13,6 +13,7 @@ import {
   type DesktopTaskRequest,
   type DesktopTaskSnapshot,
   type Message,
+  type Provider,
   type TaskApproval,
   type TaskStatus,
   type ThreadDraft,
@@ -36,6 +37,13 @@ import { compactMessages, serializeMessage } from '../lib/project.ts';
 import { deriveTitle, uid } from '../lib/utils.ts';
 import { useSettings } from './useSettings.ts';
 import { createCoworkTask, emptyContext, reduceTaskEvent, taskFromSnapshot } from './taskReducer.ts';
+import {
+  analyzeMessageImages,
+  configuredVisionRoute,
+  modelRouteKey,
+  hasImageAttachments,
+  needsVisionFallback,
+} from '../lib/vision.ts';
 
 const ACTIVE_TASK_STATUS: Record<TaskStatus, boolean> = {
   planning: true,
@@ -66,8 +74,16 @@ function isTaskActive(status: TaskStatus): boolean {
 type TaskStartOverrides = Partial<Omit<DesktopTaskRequest, 'threadId' | 'messages'>>;
 
 export interface SendAction {
-  (text: string, mode?: AppMode): Promise<void>;
-  (text: string, context: string | undefined, mode: AppMode): Promise<void>;
+  (text: string, mode?: AppMode): Promise<boolean>;
+  (text: string, context: string | undefined, mode: AppMode): Promise<boolean>;
+}
+
+export interface VisionProgress {
+  chatId: string;
+  completed: number;
+  total: number;
+  providerName: string;
+  model: string;
 }
 
 export interface ChatState {
@@ -93,6 +109,7 @@ export interface ChatState {
    * idle.
    */
   runningChatIds: string[];
+  visionProgress: VisionProgress | null;
   error: string | null;
 
   hydrate: () => Promise<void>;
@@ -103,6 +120,7 @@ export interface ChatState {
   send: SendAction;
   regenerate: () => Promise<void>;
   stop: () => void;
+  reanalyzeVision: (messageId: string) => Promise<void>;
   clearError: () => void;
   addAttachments: (attachments: Attachment[]) => void;
   removeAttachment: (attachmentId: string) => void;
@@ -141,6 +159,7 @@ interface RunningCompletion {
 }
 const completions = new Map<string, RunningCompletion>();
 const taskControllers = new Map<string, AbortController>();
+const visionRuns = new Map<string, AbortController>();
 
 /**
  * `streaming` and `streamingId` describe the chat on screen, so they are
@@ -226,7 +245,7 @@ export function selectContextPreview(state: ChatState): ContextPreview {
   return preview;
 }
 
-function buildContextPreview(state: ChatState, maxTokens?: number): ContextPreview {
+function buildContextPreview(state: ChatState, maxTokens?: number, useVisionAnalysis = false): ContextPreview {
   const thread = currentThread(state);
   const systemPrompt = effectiveSystemPrompt(thread);
   const serialized: ChatCompletionMessage[] = [];
@@ -244,7 +263,7 @@ function buildContextPreview(state: ChatState, maxTokens?: number): ContextPrevi
   }
   for (const message of state.messages) {
     if (message.error) continue;
-    const outbound = serializeMessage(message);
+    const outbound = serializeMessage(message, { useVisionAnalysis });
     serialized.push(outbound);
     if (message.attachments?.length) attachmentsByMessage.set(outbound, message.attachments);
   }
@@ -286,6 +305,82 @@ function buildContextPreview(state: ChatState, maxTokens?: number): ContextPrevi
   return preview;
 }
 
+function activeStoredProvider(): Provider | null {
+  const { providers, activeProviderId } = useSettings.getState().settings;
+  return providers.find((provider) => provider.id === activeProviderId) ?? null;
+}
+
+function visionAnalysisMatches(message: Message): boolean {
+  if (!message.visionAnalysis) return false;
+  const imageIds = (message.attachments ?? [])
+    .filter((attachment) => attachment.kind === 'image' && attachment.dataUrl)
+    .map((attachment) => attachment.id);
+  return imageIds.length > 0
+    && imageIds.every((id) => message.visionAnalysis!.attachmentIds.includes(id));
+}
+
+async function prepareVisionMessages(
+  set: Setter,
+  get: Getter,
+  chatId: string,
+  mode: AppMode,
+  messages: Message[],
+  forceMessageIds: ReadonlySet<string> = new Set(),
+): Promise<{ messages: Message[]; changed: Message[] }> {
+  const settings = useSettings.getState().settings;
+  if (forceMessageIds.size === 0 && !needsVisionFallback(mode, settings, activeStoredProvider())) {
+    return { messages, changed: [] };
+  }
+  const pending = messages.filter((message) =>
+    hasImageAttachments(message)
+    && (forceMessageIds.has(message.id) || !visionAnalysisMatches(message)));
+  if (pending.length === 0) return { messages, changed: [] };
+
+  const route = configuredVisionRoute(settings);
+  if (!route) {
+    throw new Error('This model cannot read images. Configure a Vision fallback in Settings before sending.');
+  }
+  const controller = new AbortController();
+  visionRuns.set(chatId, controller);
+  set({
+    visionProgress: {
+      chatId,
+      completed: 0,
+      total: pending.length,
+      providerName: route.provider.name,
+      model: settings.visionModel,
+    },
+    streaming: true,
+    streamingId: null,
+    error: null,
+  });
+
+  let prepared = messages;
+  const changed: Message[] = [];
+  try {
+    for (let index = 0; index < pending.length; index += 1) {
+      const analyzed = await analyzeMessageImages(pending[index], settings, controller.signal);
+      prepared = prepared.map((message) => (message.id === analyzed.id ? analyzed : message));
+      changed.push(analyzed);
+      set({
+        visionProgress: {
+          chatId,
+          completed: index + 1,
+          total: pending.length,
+          providerName: route.provider.name,
+          model: settings.visionModel,
+        },
+      });
+    }
+    return { messages: prepared, changed };
+  } finally {
+    visionRuns.delete(chatId);
+    if (get().visionProgress?.chatId === chatId) {
+      set({ visionProgress: null, streaming: false, streamingId: null });
+    }
+  }
+}
+
 export const selectActiveChat = (state: ChatState): Chat | null => state.activeChat;
 export const selectActiveTask = (state: ChatState): CoworkTask | null => state.activeTask;
 export const selectPendingApproval = (state: ChatState): TaskApproval | null =>
@@ -311,6 +406,7 @@ export const useChats = create<ChatState>((set, get) => ({
   streaming: false,
   streamingId: null,
   runningChatIds: [],
+  visionProgress: null,
   error: null,
 
   hydrate: async () => {
@@ -504,7 +600,7 @@ export const useChats = create<ChatState>((set, get) => ({
     const legacyProjectContext = secondArgumentIsMode ? undefined : contextOrMode;
     const content = text.trim();
     const pendingAttachments = [...get().attachments];
-    if ((!content && pendingAttachments.length === 0) || get().streaming) return;
+    if ((!content && pendingAttachments.length === 0) || get().streaming) return false;
     if (
       mode !== 'chat'
       && get().activeTask
@@ -512,12 +608,12 @@ export const useChats = create<ChatState>((set, get) => ({
       && get().activeTask!.threadId === get().activeChatId
     ) {
       set({ error: 'Resume or cancel the current task before starting another one.' });
-      return;
+      return false;
     }
 
     if (mode === 'chat' && !useSettings.getState().activeProvider()) {
       set({ error: 'No provider configured. Open Settings to add one.' });
-      return;
+      return false;
     }
 
     const now = Date.now();
@@ -550,7 +646,7 @@ export const useChats = create<ChatState>((set, get) => ({
     }
     if (mode === 'code' && !storedChat.workspace) {
       set({ error: 'Code mode requires a selected workspace.' });
-      return;
+      return false;
     }
     const userMessage: Message = {
       id: uid(),
@@ -561,7 +657,7 @@ export const useChats = create<ChatState>((set, get) => ({
       ...(legacyProjectContext ? { context: legacyProjectContext } : {}),
       ...(pendingAttachments.length > 0 ? { attachments: pendingAttachments } : {}),
     };
-    const messages = [...baseMessages, userMessage];
+    let messages = [...baseMessages, userMessage];
     const prospectivePreview = buildContextPreview({
       ...get(),
       activeChatId: chatId!,
@@ -574,13 +670,48 @@ export const useChats = create<ChatState>((set, get) => ({
       enabledSkillIds: storedChat.enabledSkillIds ?? [],
       context: storedChat.context ?? get().context,
     });
-    const overflow = contextBudgetError(prospectivePreview.budget);
+    const preliminaryOverflow = contextBudgetError(prospectivePreview.budget);
+    if (preliminaryOverflow) {
+      set({ error: preliminaryOverflow });
+      return false;
+    }
+
+    let changed: Message[] = [];
+    try {
+      const prepared = await prepareVisionMessages(set, get, chatId!, mode, messages);
+      messages = prepared.messages;
+      changed = prepared.changed;
+    } catch (cause) {
+      const aborted = cause instanceof DOMException && cause.name === 'AbortError';
+      if (!aborted) set({ error: errorMessage(cause, 'Could not analyze the attached images.') });
+      return false;
+    }
+
+    const useVisionAnalysis = needsVisionFallback(mode, useSettings.getState().settings, activeStoredProvider());
+    const finalPreview = buildContextPreview({
+      ...get(),
+      activeChatId: chatId!,
+      activeChat: storedChat,
+      messages,
+      attachments: [],
+      workspace: storedChat.workspace ?? null,
+      policy: storedChat.policy ?? 'ask',
+      enabledTools: storedChat.enabledTools ?? [],
+      enabledSkillIds: storedChat.enabledSkillIds ?? [],
+      context: storedChat.context ?? get().context,
+    }, undefined, useVisionAnalysis);
+    const overflow = contextBudgetError(finalPreview.budget);
     if (overflow) {
       set({ error: overflow });
-      return;
+      return false;
     }
+
     await db.saveChat(storedChat);
-    await db.saveMessage(userMessage);
+    const savedUserMessage = messages.find((message) => message.id === userMessage.id)!;
+    await Promise.all([
+      db.saveMessage(savedUserMessage),
+      ...changed.filter((message) => message.id !== savedUserMessage.id).map((message) => db.saveMessage(message)),
+    ]);
     const chats = [storedChat, ...get().chats.filter((chat) => chat.id !== chatId)];
     set({
       chats,
@@ -596,8 +727,9 @@ export const useChats = create<ChatState>((set, get) => ({
       error: null,
     });
 
-    if (mode === 'cowork' || mode === 'code') await get().startTask();
-    else await runCompletion(set, get, chatId!, useSettings.getState().activeProvider()!.model);
+    if (mode === 'cowork' || mode === 'code') return (await get().startTask()) !== null;
+    void runCompletion(set, get, chatId!, useSettings.getState().activeProvider()!.model);
+    return true;
   }) as SendAction,
 
   regenerate: async () => {
@@ -627,14 +759,40 @@ export const useChats = create<ChatState>((set, get) => ({
   },
 
   stop: () => {
+    const chatId = get().visionProgress?.chatId ?? get().activeChatId;
+    if (chatId && visionRuns.has(chatId)) {
+      visionRuns.get(chatId)!.abort();
+      return;
+    }
     if (get().activeTask && isTaskActive(get().activeTask!.status)) {
       void get().cancelTask(get().activeTask!.id);
       return;
     }
-    const chatId = get().activeChatId;
     if (chatId) completions.get(chatId)?.controller.abort();
     // streaming clears when the run's finally block removes it from the map;
     // asserting it here would claim the request had already unwound.
+  },
+
+  reanalyzeVision: async (messageId) => {
+    const { activeChatId, activeChat, messages, streaming } = get();
+    if (!activeChatId || !activeChat || streaming) return;
+    const message = messages.find((candidate) => candidate.id === messageId);
+    if (!message || !hasImageAttachments(message)) return;
+    try {
+      const prepared = await prepareVisionMessages(
+        set,
+        get,
+        activeChatId,
+        chatMode(activeChat),
+        messages,
+        new Set([messageId]),
+      );
+      await Promise.all(prepared.changed.map((changed) => db.saveMessage(changed)));
+      set({ messages: prepared.messages, error: null });
+    } catch (cause) {
+      const aborted = cause instanceof DOMException && cause.name === 'AbortError';
+      if (!aborted) set({ error: errorMessage(cause, 'Could not re-analyze the attached images.') });
+    }
   },
 
   clearError: () => set({ error: null }),
@@ -702,7 +860,20 @@ export const useChats = create<ChatState>((set, get) => ({
       set({ error: 'Resume or cancel the current task before starting another one.' });
       return null;
     }
-    const preview = selectContextPreview(get());
+    let messages = get().messages;
+    try {
+      const prepared = await prepareVisionMessages(set, get, chat.id, chatMode(chat), messages);
+      messages = prepared.messages;
+      if (prepared.changed.length > 0) {
+        await Promise.all(prepared.changed.map((message) => db.saveMessage(message)));
+        set({ messages });
+      }
+    } catch (cause) {
+      const aborted = cause instanceof DOMException && cause.name === 'AbortError';
+      if (!aborted) set({ error: errorMessage(cause, 'Could not analyze the attached images.') });
+      return null;
+    }
+    const preview = buildContextPreview({ ...get(), messages }, undefined, true);
     if (chatMode(chat) === 'code' && !preview.workspace) {
       set({ error: 'Code mode requires a selected workspace.' });
       return null;
@@ -1179,7 +1350,22 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
   /** This run owns the visible state only while its chat is the one on screen. */
   const onScreen = () => get().activeChatId === chatId;
 
-  const preview = selectContextPreview(get());
+  let messages = get().messages;
+  const destination = activeStoredProvider();
+  const useVisionAnalysis = needsVisionFallback('chat', settings, destination);
+  try {
+    const prepared = await prepareVisionMessages(set, get, chatId, 'chat', messages);
+    messages = prepared.messages;
+    if (prepared.changed.length > 0) {
+      await Promise.all(prepared.changed.map((message) => db.saveMessage(message)));
+      if (onScreen()) set({ messages });
+    }
+  } catch (cause) {
+    const aborted = cause instanceof DOMException && cause.name === 'AbortError';
+    if (!aborted && onScreen()) set({ error: errorMessage(cause, 'Could not analyze the attached images.') });
+    return;
+  }
+  const preview = buildContextPreview({ ...get(), messages }, undefined, useVisionAnalysis);
   const overflow = contextBudgetError(preview.budget);
   if (overflow) {
     set({ error: overflow, streaming: false, streamingId: null });
@@ -1319,9 +1505,22 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
         set({ messages: get().messages.filter((message) => message.id !== assistantId) });
       }
     } else {
-      const message = cause instanceof TypeError
+      let message = cause instanceof TypeError
         ? 'Network error — check the Base URL and that the endpoint allows CORS.'
         : errorMessage(cause, 'Unknown error');
+      const imageRejected = !useVisionAnalysis
+        && messages.some(hasImageAttachments)
+        && /(?:does not|doesn't|not) support(?:ed)? (?:image|vision)|image input.*(?:invalid|unsupported)/i.test(message);
+      if (imageRejected && destination) {
+        const latest = useSettings.getState().settings;
+        await useSettings.getState().update({
+          modelCapabilityOverrides: {
+            ...latest.modelCapabilityOverrides,
+            [modelRouteKey(destination.id, destination.model)]: 'text-only',
+          },
+        });
+        message = `${message} The images were not resent. Regenerate to retry through the configured Vision fallback.`;
+      }
       const failed: Message = {
         ...assistantMessage,
         content: accumulated,

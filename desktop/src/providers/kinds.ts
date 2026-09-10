@@ -12,6 +12,7 @@
 
 import { AnthropicProvider } from './anthropic.js';
 import { ApiError, ErrorType } from './errors.js';
+import { GoogleProvider } from './google.js';
 import { LocalProvider } from './local.js';
 import { OpenAiProvider } from './openai.js';
 import { OpenRouterProvider } from './openrouter.js';
@@ -20,6 +21,7 @@ import type { Provider } from './provider.js';
 export const ProviderKind = {
   /** OpenAI and every vendor that copies its wire format: DeepSeek, Groq, Together, LM Studio. */
   OpenAiCompatible: 'openai-compatible',
+  Google: 'google',
   OpenRouter: 'openrouter',
   Anthropic: 'anthropic',
   /** OpenAI-compatible but unauthenticated, with /api/tags as the model-list fallback. */
@@ -45,6 +47,8 @@ export type ProviderConstructor = (spec: ProviderSpec) => Provider;
 export const PROVIDER_KINDS: Record<ProviderKindValue, ProviderConstructor> = {
   [ProviderKind.OpenAiCompatible]: (spec) =>
     new OpenAiProvider({ apiKey: spec.apiKey ?? '', baseUrl: spec.baseUrl, fetchImpl: spec.fetchImpl }),
+  [ProviderKind.Google]: (spec) =>
+    new GoogleProvider({ apiKey: spec.apiKey ?? '', baseUrl: spec.baseUrl, fetchImpl: spec.fetchImpl }),
   [ProviderKind.OpenRouter]: (spec) =>
     new OpenRouterProvider({ apiKey: spec.apiKey ?? '', baseUrl: spec.baseUrl, fetchImpl: spec.fetchImpl }),
   [ProviderKind.Anthropic]: (spec) =>

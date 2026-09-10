@@ -153,6 +153,9 @@ export interface Model {
   object: string;
   created: number;
   owned_by: string;
+  architecture?: {
+    input_modalities?: string[];
+  };
 }
 
 /** Extracts string content from a message; '' when content is multi-part. */

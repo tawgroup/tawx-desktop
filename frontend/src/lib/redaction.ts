@@ -44,6 +44,9 @@ export function redactMessageForPersistence(message: Message): Message {
     reasoning: message.reasoning === undefined ? undefined : redactSecrets(message.reasoning),
     error: message.error === undefined ? undefined : redactSecrets(message.error),
     attachments: message.attachments?.map(redactAttachment),
+    visionAnalysis: message.visionAnalysis === undefined
+      ? undefined
+      : { ...message.visionAnalysis, text: redactSecrets(message.visionAnalysis.text) },
   };
 }
 

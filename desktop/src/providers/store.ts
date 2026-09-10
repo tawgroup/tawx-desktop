@@ -23,6 +23,7 @@ export interface ProviderRecord {
   enabled: boolean;
   model: string;
   discoveredModels: string[];
+  visionModels?: string[];
   connectionStatus: ProviderConnectionStatus;
   lastError?: string;
   lastCheckedAt?: number;
