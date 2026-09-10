@@ -73,6 +73,23 @@ export class Router {
     return this.byId.get(providerId);
   }
 
+  /**
+   * Providers configured at runtime are added to this Router rather than to a
+   * replacement: main.ts hands one instance to both the HTTP server and the
+   * agent runtime, so a rebuilt Router would leave both holding the old set.
+   */
+  register(instance: ProviderInstance): void {
+    this.byId.set(instance.id, instance.provider);
+  }
+
+  unregister(providerId: string): void {
+    this.byId.delete(providerId);
+  }
+
+  has(providerId: string): boolean {
+    return this.byId.has(providerId);
+  }
+
   /** Every configured provider, for endpoints that aggregate across all of them. */
   instances(): ProviderInstance[] {
     return [...this.byId].map(([id, provider]) => ({ id, provider }));

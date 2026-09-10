@@ -49,8 +49,13 @@ test('the gateway serves health, api info, models, chat and the UI', async () =>
     const info = (await (await fetch(`${gateway.url}/v1`)).json()) as { endpoints: Record<string, string> };
     assert.equal(info.endpoints.chat_completions, 'POST /v1/chat/completions');
 
-    const models = (await (await fetch(`${gateway.url}/v1/models`)).json()) as { data: Array<{ id: string }> };
-    assert.deepEqual(models.data.map((m) => m.id), ['llama3']);
+    // Ids are qualified with the provider that serves them, so whatever this
+    // endpoint lists can be sent straight back as a completion's `model`.
+    const models = (await (await fetch(`${gateway.url}/v1/models`)).json()) as {
+      data: Array<{ id: string; owned_by: string }>;
+    };
+    assert.deepEqual(models.data.map((m) => m.id), ['local/llama3']);
+    assert.deepEqual(models.data.map((m) => m.owned_by), ['local']);
 
     const completion = await fetch(`${gateway.url}/v1/chat/completions`, {
       method: 'POST',

@@ -10,45 +10,13 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { isIPv4 } from 'node:net';
 import { ApiError, ErrorType, writeError } from '../providers/errors.js';
+import { assertProviderUrl, isLoopbackHost } from '../providers/url.js';
 
 const MAX_REQUEST_BYTES = 4 << 20;
 const MAX_RESPONSE_BYTES = 8 << 20;
 const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_REDIRECTS = 3;
-
-/**
- * Validates a provider URL the same way the Go gateway does: a parseable
- * absolute URL, no embedded credentials, no fragment, and HTTPS unless the host
- * is loopback. Returns the parsed URL or throws an OpenAI-shaped error.
- */
-function providerTarget(raw: string): URL {
-  let target: URL;
-  try {
-    target = new URL(raw);
-  } catch {
-    throw new ApiError('invalid provider URL', ErrorType.InvalidRequest);
-  }
-  if (!target.hostname || target.username || target.password || target.hash) {
-    throw new ApiError('invalid provider URL', ErrorType.InvalidRequest);
-  }
-  if (target.protocol === 'https:') return target;
-  if (target.protocol === 'http:' && isLoopbackHost(target.hostname)) return target;
-  throw new ApiError(
-    'remote providers require HTTPS; HTTP is allowed only for localhost',
-    ErrorType.InvalidRequest,
-  );
-}
-
-/** Mirrors Go's net.IP.IsLoopback, including IPv4-mapped IPv6 (::ffff:127.0.0.1). */
-function isLoopbackHost(host: string): boolean {
-  const bare = host.replace(/^\[|\]$/g, '').toLowerCase();
-  if (bare === 'localhost') return true;
-  if (bare === '::1') return true;
-  const mapped = bare.startsWith('::ffff:') ? bare.slice('::ffff:'.length) : bare;
-  return isIPv4(mapped) && mapped.startsWith('127.');
-}
 
 /** The proxy is a local convenience, never a general-purpose open relay. */
 function isLoopbackRequest(req: IncomingMessage): boolean {
@@ -83,7 +51,7 @@ async function readCappedBody(req: IncomingMessage): Promise<ArrayBuffer | undef
 
 /**
  * Follows redirects by hand so each hop is re-validated against
- * providerTarget, the way Go's CheckRedirect does. undici's `follow` mode gives
+ * assertProviderUrl, the way Go's CheckRedirect does. undici's `follow` mode gives
  * no hook to inspect the intermediate URL.
  */
 async function fetchFollowing(
@@ -100,7 +68,7 @@ async function fetchFollowing(
     }
     // Drain the redirect body so the socket returns to the pool.
     await response.body?.cancel();
-    url = providerTarget(new URL(location, url).toString());
+    url = assertProviderUrl(new URL(location, url).toString());
   }
 }
 
@@ -123,7 +91,7 @@ export async function handleRemoteProvider(
   let target: URL;
   let body: ArrayBuffer | undefined;
   try {
-    target = providerTarget(url.searchParams.get('url') ?? '');
+    target = assertProviderUrl(url.searchParams.get('url') ?? '');
     body = req.method === 'GET' || req.method === 'HEAD' ? undefined : await readCappedBody(req);
   } catch (err) {
     const apiErr =

@@ -4,7 +4,7 @@
  * build, and no health-check race against a child process.
  */
 
-import { app, BrowserWindow, dialog, Menu, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, safeStorage, shell } from 'electron';
 import type { Server } from 'node:http';
 import { basename, join } from 'node:path';
 import { buildAppMenuTemplate } from './app-menu.js';
@@ -21,6 +21,9 @@ import {
   type DesktopIntegrationRuntime,
 } from './integrations/index.js';
 import { buildProviders } from './providers/factory.js';
+import { createProvidersHttpHandler } from './providers/http.js';
+import { ProviderRuntime } from './providers/registry.js';
+import { createSafeStorageCipher } from './providers/secrets.js';
 import { getContentString } from './providers/types.js';
 import type { ChatCompletionRequest } from './providers/types.js';
 import { createSemanticRouter, type RequestInfo } from './routing/routing.js';
@@ -98,10 +101,20 @@ async function start(): Promise<string> {
   scheduler = schedulerRuntime;
   await schedulerRuntime.start();
 
+  // Built after app.whenReady(): safeStorage needs the keychain, which Linux
+  // does not offer before then.
+  const providerRuntime = await ProviderRuntime.open({
+    directory: userData,
+    router,
+    cipher: createSafeStorageCipher(safeStorage),
+    configIds: router.instances().map((instance) => instance.id),
+  });
+
   const integrationHandler = createDesktopIntegrationHttpHandler(integrationRuntime.control);
   const handlers: DesktopHttpHandler[] = [
     ({ request, response, url }) => skills.handleRequest(request, response, url),
     createSchedulerHttpHandler(schedulerRuntime),
+    createProvidersHttpHandler(providerRuntime),
     ({ request, response, url }) => integrationHandler(request, response, url),
   ];
 

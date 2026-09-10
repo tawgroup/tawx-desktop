@@ -4,7 +4,7 @@ import { OpenRouterProvider } from './openrouter.js';
 import { readBody, startTestServer } from '../test-support/server.js';
 import type { ChatCompletionRequest } from './types.js';
 
-test('OpenRouter strips the selector prefix and requests usage when streaming', async () => {
+test('OpenRouter passes the model through and requests usage when streaming', async () => {
   const seen: ChatCompletionRequest[] = [];
 
   const server = await startTestServer(async (req, res) => {
@@ -24,12 +24,13 @@ test('OpenRouter strips the selector prefix and requests usage when streaming', 
     const provider = new OpenRouterProvider({ apiKey: 'test-key', baseUrl: server.url });
 
     await provider.chatCompletion({
-      model: 'openrouter/moonshotai/kimi-k3',
+      // Router has already stripped the `openrouter/` selector by this point.
+      model: 'moonshotai/kimi-k3',
       messages: [{ role: 'user', content: 'hello' }],
     });
 
     for await (const _chunk of provider.chatCompletionStream({
-      model: 'openrouter/moonshotai/kimi-k3',
+      model: 'moonshotai/kimi-k3',
       messages: [],
     })) {
       // drained; the server only sends [DONE]
@@ -45,7 +46,12 @@ test('OpenRouter strips the selector prefix and requests usage when streaming', 
   }
 });
 
-test('OpenRouter re-prefixes model ids from listModels', async () => {
+/**
+ * Prefixing moved to /v1/models, which qualifies every id as
+ * `<providerId>/<model>`. The adapter reporting OpenRouter's own ids is what
+ * lets that single rule apply to every provider alike.
+ */
+test('OpenRouter reports upstream model ids unchanged', async () => {
   const server = await startTestServer((_req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end('{"object":"list","data":[{"id":"moonshotai/kimi-k3","object":"model","created":0,"owned_by":"moonshotai"}]}');
@@ -54,7 +60,7 @@ test('OpenRouter re-prefixes model ids from listModels', async () => {
   try {
     const provider = new OpenRouterProvider({ apiKey: 'test-key', baseUrl: server.url });
     const models = await provider.listModels();
-    assert.deepEqual(models.map((m) => m.id), ['openrouter/moonshotai/kimi-k3']);
+    assert.deepEqual(models.map((m) => m.id), ['moonshotai/kimi-k3']);
   } finally {
     await server.close();
   }

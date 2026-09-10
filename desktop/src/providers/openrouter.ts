@@ -1,8 +1,11 @@
 /**
  * OpenRouter provider. Ported from providers/openrouter.go.
  *
- * Adapts gateway selector names to OpenRouter's model IDs: the gateway calls a
- * model `openrouter/foo`, OpenRouter itself wants plain `foo`.
+ * Model-id prefixing used to live here: the adapter added `openrouter/` to
+ * every listed model and stripped it again on the way out. That belonged to the
+ * gateway's naming, not to OpenRouter's, and now happens once at the
+ * aggregation point — /v1/models qualifies every id as `<providerId>/<model>`
+ * and Router strips the selector before the request reaches an adapter.
  */
 
 import { OpenAiProvider } from './openai.js';
@@ -10,11 +13,7 @@ import type { OpenAiOptions } from './openai.js';
 import type { Provider } from './provider.js';
 import type { ChatCompletionRequest, ChatCompletionResponse, Model, StreamChunk } from './types.js';
 
-const OPENROUTER_PREFIX = 'openrouter/';
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api';
-
-const stripPrefix = (model: string) =>
-  model.startsWith(OPENROUTER_PREFIX) ? model.slice(OPENROUTER_PREFIX.length) : model;
 
 export class OpenRouterProvider implements Provider {
   private readonly upstream: OpenAiProvider;
@@ -24,19 +23,15 @@ export class OpenRouterProvider implements Provider {
   }
 
   chatCompletion(req: ChatCompletionRequest, signal?: AbortSignal): Promise<ChatCompletionResponse> {
-    return this.upstream.chatCompletion({ ...req, model: stripPrefix(req.model) }, signal);
+    return this.upstream.chatCompletion(req, signal);
   }
 
   chatCompletionStream(req: ChatCompletionRequest, signal?: AbortSignal): AsyncIterable<StreamChunk> {
     // usage is opt-in on OpenRouter streams, and the UI shows response cost.
-    return this.upstream.chatCompletionStream(
-      { ...req, model: stripPrefix(req.model), stream_options: { include_usage: true } },
-      signal,
-    );
+    return this.upstream.chatCompletionStream({ ...req, stream_options: { include_usage: true } }, signal);
   }
 
-  async listModels(signal?: AbortSignal): Promise<Model[]> {
-    const models = await this.upstream.listModels(signal);
-    return models.map((model) => ({ ...model, id: OPENROUTER_PREFIX + model.id }));
+  listModels(signal?: AbortSignal): Promise<Model[]> {
+    return this.upstream.listModels(signal);
   }
 }

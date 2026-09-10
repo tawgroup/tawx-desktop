@@ -142,17 +142,26 @@ function isSameOriginDesktopRequest(req: IncomingMessage): boolean {
   }
 }
 
+/**
+ * Aggregates every configured provider's models under one list.
+ *
+ * Each id is published as `<providerId>/<model>` so that listing and routing
+ * agree: whatever this endpoint returns can be sent straight back as the
+ * `model` of a completion request. Two providers offering the same model name
+ * therefore both survive, where a bare list would have collapsed them.
+ */
 async function handleModels(res: ServerResponse, options: GatewayServerOptions): Promise<void> {
   const seen = new Set<string>();
   const models: Model[] = [];
   let lastErr: unknown;
 
-  for (const { provider } of options.router.instances()) {
+  for (const { id, provider } of options.router.instances()) {
     try {
       for (const model of await provider.listModels()) {
-        if (seen.has(model.id)) continue;
-        seen.add(model.id);
-        models.push(model);
+        const qualified = `${id}/${model.id}`;
+        if (seen.has(qualified)) continue;
+        seen.add(qualified);
+        models.push({ ...model, id: qualified, owned_by: id });
       }
     } catch (err) {
       // one unreachable backend must not empty the whole model list
