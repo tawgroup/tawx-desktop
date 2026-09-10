@@ -373,3 +373,20 @@ test('a missing token fails before any connection is attempted', async () => {
   );
   assert.equal(connected, false);
 });
+
+test('the model catalog is read out of GetUsableModelsResponse', async () => {
+  // GetUsableModelsResponse{ repeated ModelDetails models = 1 }, and a model's
+  // id is its own field 1 — the rest of ModelDetails is presentation.
+  const model = (id: string, displayName: string) =>
+    encodeMessageField(1, concat(encodeStringField(1, id), encodeStringField(4, displayName)));
+  const { connect } = fakeConnect((req) => {
+    req.emit('response', { ':status': 200 });
+    req.emit('data', Buffer.from(concat(model('composer-2.5', 'Composer 2.5'), model('kimi-k3-high', 'Kimi K3'))));
+    req.emit('end');
+  });
+
+  const provider = new CursorProvider({ apiKey: 'token', connectImpl: connect });
+  const models = await provider.listModels();
+  assert.deepEqual(models.map((m) => m.id), ['composer-2.5', 'kimi-k3-high']);
+  assert.equal(models[0]?.owned_by, 'cursor');
+});
