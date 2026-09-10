@@ -3,6 +3,7 @@
 import { ApiError, ErrorType, type ErrorTypeValue } from './errors.js';
 import { parseStreamChunk, readSseData } from './streaming.js';
 import { serializeRequest } from './wire.js';
+import { withEstimatedUsageCost } from './pricing.js';
 import type { Provider } from './provider.js';
 import type {
   ChatCompletionRequest,
@@ -60,7 +61,8 @@ export class OpenAiProvider implements Provider {
     if (!res.ok) throw this.parseError(res.status, text);
 
     try {
-      return JSON.parse(text) as ChatCompletionResponse;
+      const result = JSON.parse(text) as ChatCompletionResponse;
+      return { ...result, usage: withEstimatedUsageCost(this.baseUrl, req.model, result.usage) };
     } catch (err) {
       throw new ApiError(
         `failed to unmarshal response: ${err instanceof Error ? err.message : String(err)}`,
@@ -84,7 +86,8 @@ export class OpenAiProvider implements Provider {
     if (!res.body) throw new ApiError('upstream returned no body', ErrorType.Server);
 
     for await (const data of readSseData(res.body)) {
-      yield parseStreamChunk(data);
+      const chunk = parseStreamChunk(data);
+      yield { ...chunk, usage: withEstimatedUsageCost(this.baseUrl, req.model, chunk.usage) };
     }
   }
 

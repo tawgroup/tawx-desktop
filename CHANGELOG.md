@@ -8,6 +8,8 @@ FEATURE: Image attachments can now use a configurable vision fallback before Cha
 
 FEATURE: Chat response footers now show input and output token counts alongside the request cost.
 
+FIX: Chat response footers now retain provider-reported cost for every provider, estimate direct DeepSeek Flash and V4 Pro charges from cache-aware token usage and peak pricing when its API omits cost, show local inference as zero-cost, and explicitly report when a trustworthy price is unavailable.
+
 FIX: Links in desktop chat responses now open in the system browser instead of creating an embedded Electron popup.
 
 FEATURE: The desktop app now provides native, discoverable keyboard shortcuts for creating and navigating chats, switching modes, searching, focusing the composer, opening settings or context, toggling the sidebar, and stopping generation.

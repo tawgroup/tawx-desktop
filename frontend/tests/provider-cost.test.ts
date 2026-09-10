@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { fetchCompletion } from '../src/lib/api.ts';
+import { estimateUsageCost } from '../src/lib/pricing.ts';
 import { normalizeProvider } from '../src/lib/providers.ts';
 
 const deepSeek = normalizeProvider({
@@ -60,4 +61,41 @@ test('a provider-reported cost remains authoritative', async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('DeepSeek estimates cache hits, misses, output, peak hours and the V4 Pro retirement', () => {
+  const usage = {
+    prompt_tokens: 9,
+    completion_tokens: 3,
+    prompt_cache_hit_tokens: 4,
+    prompt_cache_miss_tokens: 5,
+  };
+  const offPeak = estimateUsageCost(deepSeek, 'deepseek-flash', usage, new Date('2026-09-10T14:00:00Z'));
+  const peak = estimateUsageCost(deepSeek, 'deepseek-flash', usage, new Date('2026-09-10T02:00:00Z'));
+  const retiredPro = estimateUsageCost(deepSeek, 'deepseek-v4-pro', usage, new Date('2026-09-15T14:00:00Z'));
+
+  assert.ok(Math.abs((offPeak ?? 0) - 0.000002562) < 1e-15);
+  assert.ok(Math.abs((peak ?? 0) - 0.000005124) < 1e-15);
+  assert.equal(retiredPro, offPeak);
+});
+
+test('local inference is zero-cost and unknown remote pricing stays unknown', () => {
+  const usage = { prompt_tokens: 9, completion_tokens: 3 };
+  const local = normalizeProvider({
+    id: 'ollama',
+    name: 'Ollama',
+    baseUrl: 'http://localhost:11434/v1',
+    apiKey: '',
+    model: 'llama3.2',
+  });
+  const unknown = normalizeProvider({
+    id: 'custom',
+    name: 'Custom',
+    baseUrl: 'https://example.com/v1',
+    apiKey: 'test-key',
+    model: 'custom-model',
+  });
+
+  assert.equal(estimateUsageCost(local, local.model, usage), 0);
+  assert.equal(estimateUsageCost(unknown, unknown.model, usage), undefined);
 });
