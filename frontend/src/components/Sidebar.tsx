@@ -47,6 +47,7 @@ export default function Sidebar({
 }: Props) {
   const chats = useChats((s) => s.chats);
   const activeChatId = useChats((s) => s.activeChatId);
+  const runningChatIds = useChats((s) => s.runningChatIds);
   const selectChat = useChats((s) => s.selectChat);
   const newChat = useChats((s) => s.newChat);
   const removeChat = useChats((s) => s.removeChat);
@@ -240,6 +241,14 @@ export default function Sidebar({
                           )}
                           <span className="truncate">{chat.title}</span>
                         </button>
+
+                        {runningChatIds.includes(chat.id) && (
+                          <span
+                            className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+                            aria-label="Still answering"
+                            title="Still answering"
+                          />
+                        )}
 
                         {mode !== 'chat' && chat.taskStatus && (
                           <span

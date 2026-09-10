@@ -87,6 +87,12 @@ export interface ChatState {
   streaming: boolean;
   /** Id of the assistant message currently being written to. */
   streamingId: string | null;
+  /**
+   * Every chat with an answer in flight, including ones not on screen. The
+   * sidebar shows these, or a chat left to run in the background would look
+   * idle.
+   */
+  runningChatIds: string[];
   error: string | null;
 
   hydrate: () => Promise<void>;
@@ -120,8 +126,39 @@ export interface ChatState {
 type Setter = StoreApi<ChatState>['setState'];
 type Getter = StoreApi<ChatState>['getState'];
 
-let completionController: AbortController | null = null;
+/**
+ * A completion in flight, keyed by chat id so chats stream independently.
+ *
+ * `message` is the assistant message being written. It is held here rather
+ * than only in the visible `messages` array because a chat that is not on
+ * screen still has to accumulate its output — the reader can switch away and
+ * come back to it mid-answer. Cowork and Code tasks already worked this way;
+ * see taskControllers below.
+ */
+interface RunningCompletion {
+  controller: AbortController;
+  message: Message;
+}
+const completions = new Map<string, RunningCompletion>();
 const taskControllers = new Map<string, AbortController>();
+
+/**
+ * `streaming` and `streamingId` describe the chat on screen, so they are
+ * derived from what is running rather than assigned by whoever ran it. A
+ * background completion must not make the visible chat look busy, and
+ * switching to a streaming chat must show it as streaming.
+ */
+export function visibleStreamState(
+  running: Message | undefined,
+  task: CoworkTask | null,
+  messages: Message[],
+): { streaming: boolean; streamingId: string | null } {
+  if (running) return { streaming: true, streamingId: running.id };
+  if (task && isTaskActive(task.status)) {
+    return { streaming: true, streamingId: messages.find((message) => message.taskId === task.id)?.id ?? null };
+  }
+  return { streaming: false, streamingId: null };
+}
 const TASK_PERSIST_INTERVAL_MS = 250;
 
 interface TaskPersistenceSnapshot {
@@ -273,6 +310,7 @@ export const useChats = create<ChatState>((set, get) => ({
   context: initialContext,
   streaming: false,
   streamingId: null,
+  runningChatIds: [],
   error: null,
 
   hydrate: async () => {
@@ -317,8 +355,9 @@ export const useChats = create<ChatState>((set, get) => ({
   },
 
   selectChat: async (chatId) => {
-    completionController?.abort();
-    completionController = null;
+    // Switching away no longer cancels the answer being written. The
+    // completion keeps running against its own chat id and is picked back up
+    // by visibleStreamState when the reader returns.
     if (get().activeTask) await disconnectTask(set, get().activeTask!.id);
 
     if (!chatId) {
@@ -345,11 +384,17 @@ export const useChats = create<ChatState>((set, get) => ({
 
     const storedChat = get().chats.find((chat) => chat.id === chatId);
     if (!storedChat) return;
-    const [messages, threadTasks] = await Promise.all([
+    const [stored, threadTasks] = await Promise.all([
       db.listMessages(chatId),
       db.listTasksForThread(chatId),
     ]);
     const resolvedChat = effectiveChat(storedChat);
+    // The database has no row for an answer still being written, so the live
+    // one is spliced back in.
+    const running = completions.get(chatId);
+    const messages = running && !stored.some((message) => message.id === running.message.id)
+      ? [...stored, running.message]
+      : stored;
     const task = (storedChat.taskId ? get().tasks[storedChat.taskId] : undefined) ?? threadTasks[0] ?? null;
     if (task && !get().tasks[task.id]) set({ tasks: { ...get().tasks, [task.id]: task } });
     set({
@@ -372,16 +417,13 @@ export const useChats = create<ChatState>((set, get) => ({
         enabledSkillIds: resolvedChat.enabledSkillIds ?? [],
         context: resolvedChat.context ?? emptyContext(useSettings.getState().settings.coworkContextTokens),
       },
-      streaming: Boolean(task && isTaskActive(task.status)),
-      streamingId: task ? messages.find((message) => message.taskId === task.id)?.id ?? null : null,
+      ...visibleStreamState(running?.message, task, messages),
       error: null,
     });
     if (task && isTaskActive(task.status)) await get().resumeTask(task.id);
   },
 
   newChat: (mode) => {
-    completionController?.abort();
-    completionController = null;
     if (get().activeTask) void disconnectTask(set, get().activeTask!.id);
     const nextMode = mode ?? (get().activeChat ? chatMode(get().activeChat!) : get().draftThread.mode);
     const draftThread = settingsDraft(nextMode);
@@ -415,6 +457,8 @@ export const useChats = create<ChatState>((set, get) => ({
       }
     }
     if (chat?.taskId) await disconnectTask(set, chat.taskId);
+    // Nothing to write to once the chat is gone.
+    completions.get(chatId)?.controller.abort();
     await db.deleteChat(chatId);
     const chats = get().chats.filter((candidate) => candidate.id !== chatId);
     const tasks = Object.fromEntries(Object.entries(get().tasks).filter(([, task]) => task.threadId !== chatId));
@@ -587,9 +631,10 @@ export const useChats = create<ChatState>((set, get) => ({
       void get().cancelTask(get().activeTask!.id);
       return;
     }
-    completionController?.abort();
-    completionController = null;
-    set({ streaming: false, streamingId: null });
+    const chatId = get().activeChatId;
+    if (chatId) completions.get(chatId)?.controller.abort();
+    // streaming clears when the run's finally block removes it from the map;
+    // asserting it here would claim the request had already unwound.
   },
 
   clearError: () => set({ error: null }),
@@ -1125,8 +1170,14 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
   const settings = useSettings.getState().settings;
   const provider = useSettings.getState().activeProvider();
   if (!provider) return;
-  const chat = get().activeChat;
+  const chat = get().chats.find((candidate) => candidate.id === chatId) ?? get().activeChat;
   if (!chat) return;
+  // One answer per chat. Without this, a second send while the first is still
+  // running would overwrite the map entry and orphan the first request.
+  if (completions.has(chatId)) return;
+
+  /** This run owns the visible state only while its chat is the one on screen. */
+  const onScreen = () => get().activeChatId === chatId;
 
   const preview = selectContextPreview(get());
   const overflow = contextBudgetError(preview.budget);
@@ -1147,17 +1198,24 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
     model,
     providerName: provider.name,
   };
-  set({
-    activeChat: updatedChat,
-    chats: [updatedChat, ...get().chats.filter((candidate) => candidate.id !== chatId)],
-    context: preview.budget,
-    messages: [...get().messages, assistantMessage],
-    streaming: true,
-    streamingId: assistantId,
-    error: null,
-  });
+  const controller = new AbortController();
+  // Registered before the first set so visibleStreamState can already see it.
+  completions.set(chatId, { controller, message: assistantMessage });
 
-  completionController = new AbortController();
+  set({
+    runningChatIds: [...completions.keys()],
+    chats: [updatedChat, ...get().chats.filter((candidate) => candidate.id !== chatId)],
+    ...(onScreen()
+      ? {
+          activeChat: updatedChat,
+          context: preview.budget,
+          messages: [...get().messages, assistantMessage],
+          streaming: true,
+          streamingId: assistantId,
+          error: null,
+        }
+      : {}),
+  });
   let accumulated = '';
   let routedModel = model;
   let reasoning = '';
@@ -1166,19 +1224,23 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
   let outputTokens: number | undefined;
 
   const flush = (content: string, error?: string) => {
+    const written: Message = {
+      ...assistantMessage,
+      content,
+      model: routedModel,
+      ...(reasoning ? { reasoning } : {}),
+      ...(cost !== undefined ? { cost } : {}),
+      ...(inputTokens !== undefined ? { inputTokens } : {}),
+      ...(outputTokens !== undefined ? { outputTokens } : {}),
+      ...(error ? { error } : {}),
+    };
+    // Accumulated for every run, so a chat off screen still has its answer to
+    // show when the reader comes back.
+    const running = completions.get(chatId);
+    if (running) running.message = written;
+    if (!onScreen()) return;
     set({
-      messages: get().messages.map((message) => message.id === assistantId
-        ? {
-            ...message,
-            content,
-            model: routedModel,
-            ...(reasoning ? { reasoning } : {}),
-            ...(cost !== undefined ? { cost } : {}),
-            ...(inputTokens !== undefined ? { inputTokens } : {}),
-            ...(outputTokens !== undefined ? { outputTokens } : {}),
-            ...(error ? { error } : {}),
-          }
-        : message),
+      messages: get().messages.map((message) => (message.id === assistantId ? written : message)),
     });
   };
 
@@ -1191,7 +1253,7 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
         temperature: settings.temperature,
         maxTokens: settings.maxTokens,
         webSearch: settings.webSearch && model.startsWith('openrouter/') ? settings.webSearchEngine : undefined,
-        signal: completionController.signal,
+        signal: controller.signal,
         onToken: (token) => {
           accumulated += token;
           flush(accumulated);
@@ -1219,7 +1281,7 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
         temperature: settings.temperature,
         maxTokens: settings.maxTokens,
         webSearch: settings.webSearch && model.startsWith('openrouter/') ? settings.webSearchEngine : undefined,
-        signal: completionController.signal,
+        signal: controller.signal,
       });
       accumulated = result.content;
       routedModel = result.model || model;
@@ -1253,7 +1315,7 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
           inputTokens,
           outputTokens,
         });
-      } else {
+      } else if (onScreen()) {
         set({ messages: get().messages.filter((message) => message.id !== assistantId) });
       }
     } else {
@@ -1272,10 +1334,15 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
       };
       await db.saveMessage(failed);
       flush(accumulated, message);
-      set({ error: message });
+      // The banner belongs to the chat that failed; another chat's reader must
+      // not be shown it.
+      if (onScreen()) set({ error: message });
     }
   } finally {
-    completionController = null;
-    set({ streaming: false, streamingId: null });
+    completions.delete(chatId);
+    set({ runningChatIds: [...completions.keys()] });
+    if (onScreen()) {
+      set(visibleStreamState(completions.get(chatId)?.message, get().activeTask, get().messages));
+    }
   }
 }
