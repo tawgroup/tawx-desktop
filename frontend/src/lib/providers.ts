@@ -55,6 +55,17 @@ export function normalizeProvider(provider: Partial<Provider> & Pick<Provider, '
   };
 }
 
+/**
+ * OpenRouter is the only upstream that runs a web search for us, and it is
+ * reached two ways: as a provider of its own kind, or through the gateway's
+ * `openrouter/<model>` selector. Both spellings have to count — the toggle in
+ * the composer and the request built in useChats read this one predicate, or
+ * the button lights up for a provider whose requests never carry the tool.
+ */
+export function supportsWebSearch(kind: ProviderKind, model: string): boolean {
+  return kind === 'openrouter' || model.startsWith('openrouter/');
+}
+
 export function isProviderRoutable(provider: Provider): boolean {
   if (!provider.enabled) return false;
   // A managed provider's key is held by the main process, so `apiKey` is always
@@ -78,6 +89,7 @@ export function resolveProviderCall(provider: Provider): Provider {
   return {
     ...provider,
     baseUrl: '/v1',
+    billingBaseUrl: provider.baseUrl,
     authKind: 'none',
     apiKey: '',
     model: qualifyModel(provider.id, provider.model),

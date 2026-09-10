@@ -13,6 +13,7 @@ import type {
   WebSearchEngine,
   Workspace,
 } from '../types';
+import { estimateUsageCost } from './pricing.ts';
 import { redactUnknown } from './redaction.ts';
 
 export class ApiError extends Error {
@@ -104,12 +105,16 @@ export interface NormalizedCompletionUsage {
   cost?: number;
 }
 
-function normalizeCompletionUsage(usage?: CompletionUsage): NormalizedCompletionUsage | undefined {
+function normalizeCompletionUsage(
+  usage: CompletionUsage | undefined,
+  provider: Provider,
+  model: string,
+): NormalizedCompletionUsage | undefined {
   if (!usage) return undefined;
   const normalized = {
     inputTokens: usage.prompt_tokens ?? usage.input_tokens,
     outputTokens: usage.completion_tokens ?? usage.output_tokens,
-    cost: usage.cost,
+    cost: usage.cost ?? estimateUsageCost(provider, model, usage),
   };
   return Object.values(normalized).some((value) => value !== undefined) ? normalized : undefined;
 }
@@ -192,7 +197,7 @@ export async function streamCompletion({
           try {
             const chunk = JSON.parse(payload) as StreamDelta;
             if (chunk.model) onModel?.(chunk.model);
-            const usage = normalizeCompletionUsage(chunk.usage);
+            const usage = normalizeCompletionUsage(chunk.usage, provider, model);
             if (usage) onUsage?.(usage);
             const reasoning = chunk.choices?.[0]?.delta?.reasoning;
             if (reasoning) onReasoning?.(reasoning);
@@ -238,7 +243,7 @@ export async function fetchCompletion({
     content: data.choices?.[0]?.message?.content ?? '',
     model: data.model,
     reasoning: data.choices?.[0]?.message?.reasoning,
-    usage: normalizeCompletionUsage(data.usage),
+    usage: normalizeCompletionUsage(data.usage, provider, model),
   };
 }
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { modelRoutes, normalizeProvider } from '../src/lib/providers.ts';
+import { modelRoutes, normalizeProvider, supportsWebSearch } from '../src/lib/providers.ts';
 import type { Provider } from '../src/types.ts';
 
 test('legacy providers gain lifecycle defaults without losing their selected model', () => {
@@ -52,4 +52,13 @@ test('disabled providers contribute no model routes', () => {
   assert.equal(provider.kind, 'ollama');
   assert.equal(provider.authKind, 'none');
   assert.deepEqual(modelRoutes([provider]), []);
+});
+
+test('web search follows an OpenRouter provider whose id is not "openrouter"', () => {
+  // A connection added in Settings is keyed by a generated uuid, so its
+  // gateway selector is `<uuid>/<model>`: only the kind identifies it.
+  assert.equal(supportsWebSearch('openrouter', '3bc2ad2e-f912/deepseek/deepseek-chat'), true);
+  // The gateway entry has no OpenRouter kind of its own, only the selector.
+  assert.equal(supportsWebSearch('gateway', 'openrouter/deepseek/deepseek-chat'), true);
+  assert.equal(supportsWebSearch('openai-compatible', 'deepseek-chat'), false);
 });

@@ -160,12 +160,13 @@ if (isUser) {
 }
 
 const costFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 8 });
+const hasTokenUsage = message.inputTokens !== undefined || message.outputTokens !== undefined;
 const usageParts = [
   message.inputTokens !== undefined ? `Input ${message.inputTokens.toLocaleString()} tokens` : undefined,
   message.outputTokens !== undefined ? `Output ${message.outputTokens.toLocaleString()} tokens` : undefined,
   message.cost !== undefined
     ? `${visionCost === undefined ? 'Cost' : 'Chat cost'} ${costFormatter.format(message.cost)}`
-    : undefined,
+    : hasTokenUsage ? 'Cost unavailable' : undefined,
   message.cost !== undefined && visionCost !== undefined
     ? `Total ${costFormatter.format(message.cost + visionCost)}`
     : undefined,

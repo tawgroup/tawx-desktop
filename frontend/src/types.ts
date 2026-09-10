@@ -115,6 +115,8 @@ export interface Provider {
   kind: ProviderKind;
   /** OpenAI-compatible base URL up to and including /v1. */
   baseUrl: string;
+  /** Original upstream URL retained when a managed provider is routed through `/v1`. */
+  billingBaseUrl?: string;
   authKind: ProviderAuthKind;
   /**
    * Empty for a `managed` provider: the key is held by the main process and
@@ -221,6 +223,9 @@ export interface CompletionUsage {
   completion_tokens?: number;
   input_tokens?: number;
   output_tokens?: number;
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
 }
 
 export interface StreamDelta {

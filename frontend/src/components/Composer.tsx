@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchModels } from '../lib/api';
 import { ATTACHMENT_ACCEPT, prepareAttachments } from '../lib/attachments';
-import { isProviderRoutable, modelRoutes, visionModelIds } from '../lib/providers.ts';
+import { isProviderRoutable, modelRoutes, supportsWebSearch, visionModelIds } from '../lib/providers.ts';
 import { configuredVisionRoute, needsVisionFallback } from '../lib/vision.ts';
 import { useChats } from '../store/useChats';
 import { useSettings } from '../store/useSettings';
@@ -62,7 +62,7 @@ export default function Composer({ mode, onOpenSettings }: Props) {
   });
   const hasProvider = provider !== null;
   const canCompose = mode !== 'chat' || hasProvider;
-  const webSupported = provider?.kind === 'openrouter' || (provider?.model.startsWith('openrouter/') ?? false);
+  const webSupported = provider ? supportsWebSearch(provider.kind, provider.model) : false;
   const hasPendingImages = attachments.some((attachment) => attachment.kind === 'image');
   const visionFallbackNeeded = hasPendingImages && needsVisionFallback(mode, settings, provider);
   const visionRoute = configuredVisionRoute(settings);

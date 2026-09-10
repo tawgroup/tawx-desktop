@@ -34,6 +34,7 @@ import {
   undoDesktopTask,
 } from '../lib/api.ts';
 import { compactMessages, serializeMessage } from '../lib/project.ts';
+import { supportsWebSearch } from '../lib/providers.ts';
 import { deriveTitle, uid } from '../lib/utils.ts';
 import { useSettings } from './useSettings.ts';
 import { createCoworkTask, emptyContext, reduceTaskEvent, taskFromSnapshot } from './taskReducer.ts';
@@ -1438,7 +1439,7 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
         messages: preview.messages,
         temperature: settings.temperature,
         maxTokens: settings.maxTokens,
-        webSearch: settings.webSearch && model.startsWith('openrouter/') ? settings.webSearchEngine : undefined,
+        webSearch: settings.webSearch && supportsWebSearch(provider.kind, model) ? settings.webSearchEngine : undefined,
         signal: controller.signal,
         onToken: (token) => {
           accumulated += token;
@@ -1466,7 +1467,7 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
         messages: preview.messages,
         temperature: settings.temperature,
         maxTokens: settings.maxTokens,
-        webSearch: settings.webSearch && model.startsWith('openrouter/') ? settings.webSearchEngine : undefined,
+        webSearch: settings.webSearch && supportsWebSearch(provider.kind, model) ? settings.webSearchEngine : undefined,
         signal: controller.signal,
       });
       accumulated = result.content;
