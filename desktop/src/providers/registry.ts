@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { ApiError, ErrorType } from './errors.js';
 import { createProvider, PROVIDER_KINDS, type ProviderKindValue } from './kinds.js';
 import { ProviderStore, type ProviderConnectionStatus, type ProviderRecord } from './store.js';
-import { assertProviderUrl } from './url.js';
+import { adapterBaseUrl, assertProviderUrl } from './url.js';
 import type { Router } from './router.js';
 import type { SecretCipher } from './secrets.js';
 
@@ -261,7 +261,9 @@ export class ProviderRuntime {
         ErrorType.Authentication,
       );
     }
-    return createProvider(record.kind, { baseUrl: record.baseUrl, apiKey });
+    // The record keeps the URL the user gave; the adapter needs it without the
+    // version segment it appends itself.
+    return createProvider(record.kind, { baseUrl: adapterBaseUrl(record.baseUrl), apiKey });
   }
 
   /**

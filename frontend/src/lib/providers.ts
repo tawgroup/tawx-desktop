@@ -47,7 +47,39 @@ export function normalizeProvider(provider: Partial<Provider> & Pick<Provider, '
 }
 
 export function isProviderRoutable(provider: Provider): boolean {
-  return provider.enabled && (provider.authKind === 'none' || provider.apiKey.trim().length > 0);
+  if (!provider.enabled) return false;
+  // A managed provider's key is held by the main process, so `apiKey` is always
+  // empty here; `hasApiKey` is what says whether one exists.
+  if (provider.ownership === 'managed') {
+    return provider.authKind === 'none' || provider.hasApiKey === true;
+  }
+  return provider.authKind === 'none' || provider.apiKey.trim().length > 0;
+}
+
+/**
+ * Rewrites a managed provider into a gateway call.
+ *
+ * The renderer stops being a provider client: the base URL becomes this
+ * server's own `/v1`, no key is attached, and the provider is named inside the
+ * model as `<providerId>/<model>` — the selector the gateway's Router splits.
+ * A local provider is returned unchanged and is still called directly.
+ */
+export function resolveProviderCall(provider: Provider): Provider {
+  if (provider.ownership !== 'managed') return provider;
+  return {
+    ...provider,
+    baseUrl: '/v1',
+    authKind: 'none',
+    apiKey: '',
+    model: qualifyModel(provider.id, provider.model),
+    discoveredModels: provider.discoveredModels.map((model) => qualifyModel(provider.id, model)),
+  };
+}
+
+/** `deepseek` + `deepseek-chat` → `deepseek/deepseek-chat`, idempotently. */
+export function qualifyModel(providerId: string, model: string): string {
+  if (!model) return model;
+  return model.startsWith(`${providerId}/`) ? model : `${providerId}/${model}`;
 }
 
 export function validateProviderBaseUrl(baseUrl: string): string | null {
@@ -86,6 +118,7 @@ export function providerKindLabel(kind: ProviderKind): string {
     case 'gateway': return 'Managed gateway';
     case 'openrouter': return 'OpenRouter';
     case 'ollama': return 'Ollama';
+    case 'anthropic': return 'Anthropic';
     default: return 'OpenAI-compatible';
   }
 }

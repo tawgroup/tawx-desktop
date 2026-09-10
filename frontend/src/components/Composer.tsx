@@ -38,11 +38,16 @@ export default function Composer({ mode }: { mode: AppMode }) {
   const settings = useSettings((s) => s.settings);
   const updateProvider = useSettings((s) => s.updateProvider);
   const setActiveProvider = useSettings((s) => s.setActiveProvider);
+  const refreshProvider = useSettings((s) => s.refreshProvider);
   const sendOnEnter = settings.sendOnEnter;
   const provider = settings.providers.find((item) => item.id === settings.activeProviderId && isProviderRoutable(item))
     ?? settings.providers.find(isProviderRoutable)
     ?? null;
-  const providerSource = provider ? `${provider.id}\0${provider.baseUrl}\0${provider.apiKey}` : '';
+  // `hasApiKey` stands in for the key of a managed provider, whose `apiKey` is
+  // always empty here — without it, replacing a key would not refresh the list.
+  const providerSource = provider
+    ? `${provider.id}\0${provider.baseUrl}\0${provider.apiKey}\0${provider.hasApiKey ?? ''}`
+    : '';
   const routes = modelRoutes(settings.providers);
   const filteredRoutes = routes.filter((route) => {
     const needle = query.trim().toLowerCase();
@@ -79,21 +84,26 @@ export default function Composer({ mode }: { mode: AppMode }) {
     if (!pickerOpen || !provider || modelSource === providerSource) return;
     const controller = new AbortController();
     setModelError('');
-    void fetchModels(provider, controller.signal)
-      .then(async (items) => {
-        const discoveredModels = items.map((item) => item.id);
-        setModelSource(providerSource);
-        await updateProvider(provider.id, {
-          discoveredModels,
-          connectionStatus: 'connected',
-          lastCheckedAt: Date.now(),
-          lastError: undefined,
+
+    // A managed provider's key never reaches this renderer, so the probe has to
+    // run in the main process; calling the vendor from here would go out
+    // unauthenticated.
+    const load = provider.ownership === 'managed'
+      ? refreshProvider(provider.id).then(() => setModelSource(providerSource))
+      : fetchModels(provider, controller.signal).then(async (items) => {
+          setModelSource(providerSource);
+          await updateProvider(provider.id, {
+            discoveredModels: items.map((item) => item.id),
+            connectionStatus: 'connected',
+            lastCheckedAt: Date.now(),
+            lastError: undefined,
+          });
         });
-      })
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted) setModelError(error instanceof Error ? error.message : 'Could not load models');
-      });
-  }, [pickerOpen, provider, providerSource, modelSource, updateProvider]);
+
+    void load.catch((error: unknown) => {
+      if (!controller.signal.aborted) setModelError(error instanceof Error ? error.message : 'Could not load models');
+    });
+  }, [pickerOpen, provider, providerSource, modelSource, updateProvider, refreshProvider]);
 
   useEffect(() => {
     if (!pickerOpen) return;

@@ -25,8 +25,14 @@ function connectionError(error: unknown): string {
   return error instanceof Error ? error.message : 'Connection failed';
 }
 
+/** A managed provider's key is server-side, so `hasApiKey` stands in for it. */
+function needsKey(provider: Provider): boolean {
+  if (provider.authKind !== 'bearer') return false;
+  return provider.ownership === 'managed' ? provider.hasApiKey !== true : !provider.apiKey;
+}
+
 function statusStyle(provider: Provider): string {
-  if (provider.authKind === 'bearer' && !provider.apiKey) return 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300';
+  if (needsKey(provider)) return 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300';
   if (!provider.enabled) return 'bg-surface-100 text-surface-500 dark:bg-surface-700';
   if (provider.connectionStatus === 'connected') return 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300';
   if (provider.connectionStatus === 'error') return 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300';
@@ -35,7 +41,7 @@ function statusStyle(provider: Provider): string {
 
 function statusLabel(provider: Provider): string {
   if (!provider.enabled) return 'Disabled';
-  if (provider.authKind === 'bearer' && !provider.apiKey) return 'Needs API key';
+  if (needsKey(provider)) return 'Needs API key';
   if (provider.connectionStatus === 'connected') return 'Connected';
   if (provider.connectionStatus === 'error') return 'Needs attention';
   if (provider.connectionStatus === 'testing') return 'Checking';
@@ -44,14 +50,18 @@ function statusLabel(provider: Provider): string {
 
 export default function ProviderSettings() {
   const settings = useSettings((state) => state.settings);
+  const providerBackend = useSettings((state) => state.providerBackend);
   const addProvider = useSettings((state) => state.addProvider);
   const updateProvider = useSettings((state) => state.updateProvider);
   const removeProvider = useSettings((state) => state.removeProvider);
   const setActiveProvider = useSettings((state) => state.setActiveProvider);
+  const refreshProvider = useSettings((state) => state.refreshProvider);
   const [draft, setDraft] = useState<ProviderDraft | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const managed = providerBackend === 'desktop';
 
   const beginAdd = () => {
     setEditingId(null);
@@ -88,8 +98,13 @@ export default function ProviderSettings() {
 
   const checkSaved = async (provider: Provider) => {
     setTestingId(provider.id);
-    await updateProvider(provider.id, { connectionStatus: 'testing', lastError: undefined });
     try {
+      if (provider.ownership === 'managed') {
+        // The key lives in the main process, so the probe runs there too.
+        await refreshProvider(provider.id);
+        return;
+      }
+      await updateProvider(provider.id, { connectionStatus: 'testing', lastError: undefined });
       const discoveredModels = await probe(provider);
       await updateProvider(provider.id, {
         connectionStatus: 'connected',
@@ -98,15 +113,67 @@ export default function ProviderSettings() {
         lastError: undefined,
       });
     } catch (error) {
-      const lastError = connectionError(error);
       await updateProvider(provider.id, {
         connectionStatus: 'error',
         lastCheckedAt: Date.now(),
-        lastError,
+        lastError: connectionError(error),
       });
     } finally {
       setTestingId(null);
     }
+  };
+
+  /**
+   * Managed providers are saved before being probed: the desktop holds the key,
+   * so there is nothing to test against until the record exists. Local
+   * providers keep the older order, probing the draft first.
+   */
+  const saveManaged = async (testFirst: boolean) => {
+    if (!draft) return;
+    const payload = {
+      ...draft,
+      name: draft.name.trim() || draft.baseUrl,
+      baseUrl: draft.baseUrl.trim().replace(/\/$/, ''),
+      model: draft.model.trim(),
+    };
+
+    let id: string;
+    try {
+      if (editingId) {
+        await updateProvider(editingId, payload);
+        id = editingId;
+      } else {
+        id = await addProvider(payload);
+      }
+    } catch (error) {
+      setFeedback({ ok: false, message: connectionError(error) });
+      return;
+    }
+
+    if (testFirst) {
+      setTestingId(id);
+      try {
+        await refreshProvider(id);
+        const saved = useSettings.getState().settings.providers.find((provider) => provider.id === id);
+        if (saved?.connectionStatus === 'error') {
+          setFeedback({ ok: false, message: saved.lastError ?? 'Connection failed' });
+          return;
+        }
+        setFeedback({
+          ok: true,
+          message: `Connected — ${saved?.discoveredModels.length ?? 0} models available.`,
+        });
+      } catch (error) {
+        setFeedback({ ok: false, message: connectionError(error) });
+        return;
+      } finally {
+        setTestingId(null);
+      }
+    }
+
+    setDraft(null);
+    setEditingId(null);
+    setFeedback(null);
   };
 
   const save = async (testFirst: boolean) => {
@@ -116,6 +183,9 @@ export default function ProviderSettings() {
       setFeedback({ ok: false, message: urlError });
       return;
     }
+    setFeedback(null);
+    if (managed) return saveManaged(testFirst);
+
     const existing = settings.providers.find((provider) => provider.id === editingId);
     const provider: Provider = {
       ...draft,
@@ -128,7 +198,6 @@ export default function ProviderSettings() {
       lastError: undefined,
     };
 
-    setFeedback(null);
     if (testFirst) {
       setTestingId(provider.id);
       try {
@@ -165,7 +234,10 @@ export default function ProviderSettings() {
   };
 
   const deleteProvider = async (provider: Provider) => {
-    if (confirm(`Delete ${provider.name}? The saved API key and model catalog will be removed.`)) {
+    const warning = provider.ownership === 'managed'
+      ? `Delete ${provider.name}? Its API key will be removed from the system keychain.`
+      : `Delete ${provider.name}? The saved API key and model catalog will be removed.`;
+    if (confirm(warning)) {
       await removeProvider(provider.id);
       if (editingId === provider.id) setDraft(null);
     }
@@ -177,7 +249,9 @@ export default function ProviderSettings() {
         <div>
           <h3 className="text-sm font-semibold uppercase tracking-wide text-surface-700/60 dark:text-surface-200/50">Providers</h3>
           <p className="mt-1 text-xs leading-5 text-surface-700/60 dark:text-surface-200/40">
-            Each provider is a separate route. API keys stay in this desktop browser profile and exports omit them.
+            {managed
+              ? 'Each provider is a separate route. API keys are encrypted by the system keychain and never leave this machine.'
+              : 'Each provider is a separate route. API keys stay in this desktop browser profile and exports omit them.'}
           </p>
         </div>
         {!draft && <button onClick={beginAdd} className="btn-primary shrink-0"><IconPlus className="h-4 w-4" /> Add</button>}
@@ -201,20 +275,25 @@ export default function ProviderSettings() {
                   <span className="truncate text-sm font-medium">{provider.name}</span>
                   <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] text-surface-600 dark:bg-surface-700 dark:text-surface-300">{providerKindLabel(provider.kind)}</span>
                   <span className={`rounded-full px-2 py-0.5 text-[10px] ${statusStyle(provider)}`}>{statusLabel(provider)}</span>
+                  {provider.readOnly && <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] text-surface-600 dark:bg-surface-700 dark:text-surface-300">From config file</span>}
                 </div>
-                <p className="mt-1 truncate text-xs text-surface-700/60 dark:text-surface-200/40">{provider.model} via {provider.baseUrl}</p>
+                <p className="mt-1 truncate text-xs text-surface-700/60 dark:text-surface-200/40">
+                  {provider.readOnly ? 'Configured in config.yaml' : `${provider.model} via ${provider.baseUrl}`}
+                </p>
                 {provider.lastError && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{provider.lastError}</p>}
                 {provider.discoveredModels.length > 1 && <p className="mt-1 text-[11px] text-surface-500">{provider.discoveredModels.length} models discovered</p>}
               </div>
-              <button onClick={() => void toggleProvider(provider)} className="btn-ghost !px-2 text-xs">{provider.enabled ? 'Disable' : 'Enable'}</button>
+              {!provider.readOnly && <button onClick={() => void toggleProvider(provider)} className="btn-ghost !px-2 text-xs">{provider.enabled ? 'Disable' : 'Enable'}</button>}
             </div>
-            <div className="mt-2 flex flex-wrap gap-2 pl-7">
-              <button onClick={() => beginEdit(provider)} className="btn-ghost !px-2 text-xs">Configure</button>
-              <button disabled={!provider.enabled || testingId === provider.id} onClick={() => void checkSaved(provider)} className="btn-ghost !px-2 text-xs">
-                {testingId === provider.id && <IconSpinner className="h-3.5 w-3.5" />} Test & refresh
-              </button>
-              <button onClick={() => void deleteProvider(provider)} className="btn-ghost !px-2 text-xs hover:text-red-600" aria-label={`Delete ${provider.name}`}><IconTrash className="h-3.5 w-3.5" /> Delete</button>
-            </div>
+            {!provider.readOnly && (
+              <div className="mt-2 flex flex-wrap gap-2 pl-7">
+                <button onClick={() => beginEdit(provider)} className="btn-ghost !px-2 text-xs">Configure</button>
+                <button disabled={!provider.enabled || testingId === provider.id} onClick={() => void checkSaved(provider)} className="btn-ghost !px-2 text-xs">
+                  {testingId === provider.id && <IconSpinner className="h-3.5 w-3.5" />} Test &amp; refresh
+                </button>
+                <button onClick={() => void deleteProvider(provider)} className="btn-ghost !px-2 text-xs hover:text-red-600" aria-label={`Delete ${provider.name}`}><IconTrash className="h-3.5 w-3.5" /> Delete</button>
+              </div>
+            )}
           </article>
         ))}
         {!settings.providers.length && <p className="rounded-xl border border-dashed border-surface-200 px-3 py-6 text-center text-sm text-surface-500 dark:border-surface-700">No provider connections.</p>}
@@ -232,11 +311,17 @@ export default function ProviderSettings() {
             <label className="label" htmlFor="provider-auth">Authorization</label>
             <select id="provider-auth" className="input" value={draft.authKind} onChange={(event) => setDraft({ ...draft, authKind: event.target.value as ProviderDraft['authKind'], apiKey: event.target.value === 'none' ? '' : draft.apiKey })}><option value="bearer">Bearer API key</option><option value="none">No authorization</option></select>
           </div>
-          {draft.authKind === 'bearer' && <div><label className="label" htmlFor="provider-key">API key</label><input id="provider-key" type="password" className="input" value={draft.apiKey} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value, connectionStatus: 'untested' })} placeholder={editingId ? 'Leave blank to keep current key' : 'Required by provider'} autoComplete="off" /></div>}
+          {draft.authKind === 'bearer' && (
+            <div>
+              <label className="label" htmlFor="provider-key">API key</label>
+              <input id="provider-key" type="password" className="input" value={draft.apiKey} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value, connectionStatus: 'untested' })} placeholder={editingId ? 'Leave blank to keep current key' : 'Required by provider'} autoComplete="off" />
+              {managed && <p className="hint">Stored in the system keychain by the desktop app, not in this browser profile.</p>}
+            </div>
+          )}
           <div><label className="label" htmlFor="provider-model">Default model</label><input id="provider-model" className="input" list="provider-models" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder="model-id" /><datalist id="provider-models">{draft.discoveredModels.map((model) => <option key={model} value={model} />)}</datalist></div>
           {feedback && <p role="status" className={feedback.ok ? 'text-xs text-green-600 dark:text-green-400' : 'text-xs text-red-600 dark:text-red-400'}>{feedback.message}</p>}
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => void save(true)} disabled={!draft.baseUrl.trim() || !draft.model.trim() || testingId !== null} className="btn-primary">{testingId && <IconSpinner className="h-4 w-4" />} Test & save</button>
+            <button onClick={() => void save(true)} disabled={!draft.baseUrl.trim() || !draft.model.trim() || testingId !== null} className="btn-primary">{testingId && <IconSpinner className="h-4 w-4" />} Test &amp; save</button>
             <button onClick={() => void save(false)} disabled={!draft.baseUrl.trim() || !draft.model.trim()} className="btn-ghost border border-surface-200 dark:border-surface-700">Save without testing</button>
             <button onClick={() => { setDraft(null); setEditingId(null); setFeedback(null); }} className="btn-ghost">Cancel</button>
           </div>

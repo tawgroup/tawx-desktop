@@ -347,3 +347,55 @@ test('a provider is refused when no keychain is available', async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+/**
+ * The regression that motivated adapterBaseUrl: the Settings field asks for a
+ * URL "including /v1" while the adapters append `/v1/...` themselves, so every
+ * migrated provider was reaching `/v1/v1/chat/completions`. Asserting the exact
+ * path is the only way to see it — a mock that answers any URL cannot.
+ */
+test('the upstream is reached at /v1/... exactly once, whichever form the URL took', async () => {
+  const paths: string[] = [];
+  const upstream = await startTestServer((req, res) => {
+    paths.push(req.url ?? '');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end('{"object":"list","data":[{"id":"m1"}]}');
+  });
+
+  for (const [suffix, label] of [['/v1', 'with /v1'], ['', 'without /v1']] as const) {
+    const { runtime, cleanup } = await open();
+    try {
+      await runtime.create({
+        id: 'probe',
+        name: 'Probe',
+        kind: 'ollama',
+        baseUrl: `${upstream.url}${suffix}`,
+      });
+      const tested = await runtime.test('probe');
+      assert.equal(tested.connectionStatus, 'connected', label);
+    } finally {
+      await cleanup();
+    }
+  }
+
+  await upstream.close();
+  assert.deepEqual(paths, ['/v1/models', '/v1/models']);
+});
+
+test('the stored base URL keeps the form the user typed', async () => {
+  const { runtime, cleanup } = await open();
+
+  try {
+    // Settings must show what was entered, not an internally rewritten base.
+    const created = await runtime.create({
+      id: 'deepseek',
+      name: 'DeepSeek',
+      kind: 'openai-compatible',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'sk-x',
+    });
+    assert.equal(created.baseUrl, 'https://api.deepseek.com/v1');
+  } finally {
+    await cleanup();
+  }
+});

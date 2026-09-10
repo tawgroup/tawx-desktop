@@ -89,7 +89,7 @@ export interface ThreadDraft {
 
 export const chatMode = (chat: Chat): AppMode => chat.mode ?? 'chat';
 
-export type ProviderKind = 'gateway' | 'openrouter' | 'openai-compatible' | 'ollama';
+export type ProviderKind = 'gateway' | 'openrouter' | 'openai-compatible' | 'ollama' | 'anthropic';
 export type ProviderAuthKind = 'bearer' | 'none';
 export type ProviderConnectionStatus = 'untested' | 'testing' | 'connected' | 'error';
 
@@ -100,6 +100,10 @@ export interface Provider {
   /** OpenAI-compatible base URL up to and including /v1. */
   baseUrl: string;
   authKind: ProviderAuthKind;
+  /**
+   * Empty for a `managed` provider: the key is held by the main process and
+   * never reaches this browser profile.
+   */
   apiKey: string;
   enabled: boolean;
   model: string;
@@ -107,6 +111,17 @@ export interface Provider {
   connectionStatus: ProviderConnectionStatus;
   lastCheckedAt?: number;
   lastError?: string;
+  /**
+   * `managed` means the desktop main process owns this record and its key, and
+   * requests for it go through the gateway as `<id>/<model>`. `local` means the
+   * record lives in this browser profile and is called directly — the only mode
+   * available when the bundle is served by the Go gateway.
+   */
+  ownership?: 'managed' | 'local';
+  /** True when the record comes from config.yaml and cannot be edited here. */
+  readOnly?: boolean;
+  /** Managed providers report whether a key is held, never the key itself. */
+  hasApiKey?: boolean;
 }
 
 export interface Settings {

@@ -21,6 +21,27 @@ export function isLoopbackHost(host: string): boolean {
 }
 
 /**
+ * Converts a stored provider URL into the base an adapter expects.
+ *
+ * Two conventions meet here. Users — and the Settings field's own hint — give
+ * the URL "including /v1", because that is what a provider's docs print. The
+ * adapters, and config.yaml with them, take a base *without* the version and
+ * append `/v1/chat/completions` themselves. Handing one to the other produced
+ * `/v1/v1/chat/completions`.
+ *
+ * Stripping one trailing `/v1` reconciles them and accepts either form, so a
+ * user who omits it is equally correct:
+ *
+ *   https://api.deepseek.com/v1     → https://api.deepseek.com
+ *   https://api.groq.com/openai/v1  → https://api.groq.com/openai
+ *   https://api.deepseek.com        → https://api.deepseek.com
+ */
+export function adapterBaseUrl(storedUrl: string): string {
+  const trimmed = storedUrl.trim().replace(/\/+$/, '');
+  return trimmed.replace(/\/v1$/, '');
+}
+
+/**
  * Parses an absolute provider URL, rejecting anything that could smuggle
  * credentials or downgrade the transport. Throws an OpenAI-shaped ApiError.
  */
