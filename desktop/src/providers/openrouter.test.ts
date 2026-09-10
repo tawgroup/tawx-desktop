@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { OpenRouterProvider } from './openrouter.js';
+import { OpenRouterProvider, translateWebSearch } from './openrouter.js';
 import { readBody, startTestServer } from '../test-support/server.js';
 import type { ChatCompletionRequest } from './types.js';
 
@@ -64,4 +64,49 @@ test('OpenRouter reports upstream model ids unchanged', async () => {
   } finally {
     await server.close();
   }
+});
+
+test('the web-search tool becomes the web plugin', () => {
+  // OpenRouter's agentic web_search tool answers 429 for requests the plugin
+  // serves, so the request is rewritten on the way out.
+  const translated = translateWebSearch({
+    model: 'deepseek/deepseek-v4.1-flash',
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [{ type: 'openrouter:web_search', parameters: { engine: 'exa', max_uses: 1, max_results: 3 } }],
+  });
+
+  assert.deepEqual(translated.plugins, [{ id: 'web', engine: 'exa', max_results: 3 }]);
+  assert.equal(translated.tools, undefined, 'the tool it replaced must not also be sent');
+});
+
+test("the frontend's 'auto' engine is an omission, not a value", () => {
+  // The plugin rejects "auto" with a 400; it is the UI's word for no preference.
+  const translated = translateWebSearch({
+    model: 'm',
+    messages: [],
+    tools: [{ type: 'openrouter:web_search', parameters: { engine: 'auto', max_results: 3 } }],
+  });
+  assert.deepEqual(translated.plugins, [{ id: 'web', max_results: 3 }]);
+});
+
+test('ordinary tools survive alongside a web search', () => {
+  const weather = { type: 'function', function: { name: 'get_weather' } };
+  const translated = translateWebSearch({
+    model: 'm',
+    messages: [],
+    tools: [weather, { type: 'openrouter:web_search', parameters: { engine: 'auto' } }],
+  });
+  assert.deepEqual(translated.tools, [weather]);
+  assert.deepEqual(translated.plugins, [{ id: 'web' }]);
+});
+
+test('a request without web search is passed through untouched', () => {
+  const req = {
+    model: 'm',
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [{ type: 'function', function: { name: 'f' } }],
+  };
+  const translated = translateWebSearch(req);
+  assert.equal(translated.plugins, undefined);
+  assert.deepEqual(translated.tools, req.tools);
 });
