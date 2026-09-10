@@ -2,13 +2,13 @@
  * Builds the provider set from configuration. Ported from the provider-wiring
  * half of gateway/gateway.go, minus the zrok/agora transports, which have no
  * TypeScript counterpart and are not used by the desktop config.
+ *
+ * Each config section names a kind; construction itself lives in kinds.ts, so
+ * a new vendor never needs a branch here.
  */
 
-import { AnthropicProvider } from './anthropic.js';
-import { LocalProvider } from './local.js';
+import { createProvider, ProviderKind, type ProviderKindValue } from './kinds.js';
 import { MultiLocalProvider } from './multiLocal.js';
-import { OpenAiProvider } from './openai.js';
-import { OpenRouterProvider } from './openrouter.js';
 import { ProviderType, Router, type ProviderTypeValue } from './router.js';
 import type { GatewayConfig } from '../config/config.js';
 import type { Provider } from './provider.js';
@@ -19,35 +19,34 @@ export interface BuiltProviders {
   multiLocal?: MultiLocalProvider;
 }
 
+/**
+ * The keyed provider sections of the config, in the order they are offered to
+ * /v1/models. Each is built only when it carries an API key.
+ */
+const KEYED_SECTIONS: Array<{
+  id: ProviderTypeValue;
+  kind: ProviderKindValue;
+  section: 'open_ai' | 'open_router' | 'anthropic';
+}> = [
+  { id: ProviderType.OpenAi, kind: ProviderKind.OpenAiCompatible, section: 'open_ai' },
+  { id: ProviderType.OpenRouter, kind: ProviderKind.OpenRouter, section: 'open_router' },
+  { id: ProviderType.Anthropic, kind: ProviderKind.Anthropic, section: 'anthropic' },
+];
+
 export function buildProviders(config: GatewayConfig): BuiltProviders {
   const providers = new Map<ProviderTypeValue, Provider>();
   const configured = config.providers ?? {};
   let multiLocal: MultiLocalProvider | undefined;
 
-  if (configured.open_ai?.api_key) {
-    providers.set(
-      ProviderType.OpenAi,
-      new OpenAiProvider({ apiKey: configured.open_ai.api_key, baseUrl: configured.open_ai.base_url }),
-    );
+  for (const { id, kind, section } of KEYED_SECTIONS) {
+    const settings = configured[section];
+    if (!settings?.api_key) continue;
+    providers.set(id, createProvider(kind, { apiKey: settings.api_key, baseUrl: settings.base_url }));
   }
 
-  if (configured.open_router?.api_key) {
-    providers.set(
-      ProviderType.OpenRouter,
-      new OpenRouterProvider({
-        apiKey: configured.open_router.api_key,
-        baseUrl: configured.open_router.base_url,
-      }),
-    );
-  }
-
-  if (configured.anthropic?.api_key) {
-    providers.set(
-      ProviderType.Anthropic,
-      new AnthropicProvider({ apiKey: configured.anthropic.api_key, baseUrl: configured.anthropic.base_url }),
-    );
-  }
-
+  // The local pool has no counterpart in kinds.ts: MultiLocalProvider fans out
+  // across several endpoints with health checks rather than adapting one
+  // vendor's wire format, so it is wired by hand.
   const local = configured.local;
   if (local?.endpoints?.length) {
     multiLocal = new MultiLocalProvider(
@@ -63,7 +62,7 @@ export function buildProviders(config: GatewayConfig): BuiltProviders {
     }
     providers.set(ProviderType.Local, multiLocal);
   } else if (local?.base_url) {
-    providers.set(ProviderType.Local, new LocalProvider({ baseUrl: local.base_url }));
+    providers.set(ProviderType.Local, createProvider(ProviderKind.Ollama, { baseUrl: local.base_url }));
   }
 
   return { router: new Router(providers), multiLocal };

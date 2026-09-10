@@ -147,9 +147,7 @@ async function handleModels(res: ServerResponse, options: GatewayServerOptions):
   const models: Model[] = [];
   let lastErr: unknown;
 
-  for (const providerType of ['openai', 'openrouter', 'anthropic', 'local'] as const) {
-    const provider = options.router.getProvider(providerType);
-    if (!provider) continue;
+  for (const { provider } of options.router.instances()) {
     try {
       for (const model of await provider.listModels()) {
         if (seen.has(model.id)) continue;
@@ -185,7 +183,10 @@ async function handleChatCompletions(
     body.model = await options.resolveModel(body);
   }
 
-  const { provider } = options.router.route(body.model);
+  const route = options.router.route(body.model);
+  const provider = route.provider;
+  // the upstream never sees the `<providerId>/` selector, only its own name
+  body.model = route.model;
 
   // the client aborting must cancel the upstream request, not leak it
   const controller = new AbortController();

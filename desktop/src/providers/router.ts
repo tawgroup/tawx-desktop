@@ -3,6 +3,11 @@
 import { ApiError, ErrorType } from './errors.js';
 import type { Provider } from './provider.js';
 
+/**
+ * The four providers that a config file can declare. Their values double as
+ * the instance ids of config-file providers, so `openrouter/kimi-k2` selects
+ * the same provider whether it arrives as a selector or by name sniffing.
+ */
 export const ProviderType = {
   OpenAi: 'openai',
   OpenRouter: 'openrouter',
@@ -12,36 +17,73 @@ export const ProviderType = {
 
 export type ProviderTypeValue = (typeof ProviderType)[keyof typeof ProviderType];
 
+export interface ProviderInstance {
+  id: string;
+  provider: Provider;
+}
+
 export interface Route {
   provider: Provider;
-  providerType: ProviderTypeValue;
+  providerId: string;
+  /** `model` with the `<providerId>/` selector removed, ready for the upstream. */
+  model: string;
 }
 
 export class Router {
-  constructor(private readonly providers: Map<ProviderTypeValue, Provider>) {}
+  private readonly byId: Map<string, Provider>;
 
   /**
-   * Routing rules: an `openrouter/` prefix wins first; then `gpt-`, `o1-` and
-   * `o3-` go to OpenAI and `claude-` to Anthropic; everything else (llama,
-   * mistral, …) falls through to Local.
+   * Accepts the config-file map (keyed by ProviderType) or an explicit instance
+   * list, which is what user-configured providers will supply.
+   */
+  constructor(providers: Map<ProviderTypeValue, Provider> | ProviderInstance[]) {
+    this.byId = Array.isArray(providers)
+      ? new Map(providers.map((instance) => [instance.id, instance.provider]))
+      : new Map(providers);
+  }
+
+  /**
+   * An explicit `<providerId>/<model>` selector wins; without one the legacy
+   * name-prefix rules below decide. The selector is what lets two providers of
+   * the same kind — two OpenAI-compatible endpoints, say — coexist, which name
+   * sniffing alone cannot express.
    */
   route(model: string): Route {
-    const providerType = resolveProvider(model);
-    const provider = this.providers.get(providerType);
+    // First slash only: OpenRouter model ids carry slashes of their own, as in
+    // openrouter/openai/gpt-4o-mini.
+    const separator = model.indexOf('/');
+    if (separator > 0) {
+      const providerId = model.slice(0, separator);
+      const provider = this.byId.get(providerId);
+      if (provider) return { provider, providerId, model: model.slice(separator + 1) };
+    }
+
+    const providerId = resolveProvider(model);
+    const provider = this.byId.get(providerId);
     if (!provider) {
       throw new ApiError(
-        `provider '${providerType}' not configured for model '${model}'`,
+        `provider '${providerId}' not configured for model '${model}'`,
         ErrorType.InvalidRequest,
       );
     }
-    return { provider, providerType };
+    return { provider, providerId, model };
   }
 
-  getProvider(providerType: ProviderTypeValue): Provider | undefined {
-    return this.providers.get(providerType);
+  getProvider(providerId: string): Provider | undefined {
+    return this.byId.get(providerId);
+  }
+
+  /** Every configured provider, for endpoints that aggregate across all of them. */
+  instances(): ProviderInstance[] {
+    return [...this.byId].map(([id, provider]) => ({ id, provider }));
   }
 }
 
+/**
+ * Fallback for a bare model name. Routing rules: an `openrouter/` prefix wins
+ * first; then `gpt-`, `o1-` and `o3-` go to OpenAI and `claude-` to Anthropic;
+ * everything else (llama, mistral, …) falls through to Local.
+ */
 export function resolveProvider(model: string): ProviderTypeValue {
   const lower = model.toLowerCase();
   if (lower.startsWith('openrouter/')) return ProviderType.OpenRouter;

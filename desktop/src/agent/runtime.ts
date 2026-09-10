@@ -378,7 +378,11 @@ export class TaskRuntime implements TaskDispatcher {
           request.model = task.model;
         }
 
-        const { provider } = this.options.router.route(request.model);
+        const route = this.options.router.route(request.model);
+        const provider = route.provider;
+        // task.model keeps the selector so a re-run picks the same provider;
+        // the upstream only ever sees its own model name.
+        request.model = route.model;
         let content = '';
         let reasoning = '';
         let pendingContent = '';
