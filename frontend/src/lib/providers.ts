@@ -23,6 +23,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: 'google', name: 'Google Gemini', kind: 'google', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', authKind: 'bearer', model: 'gemini-3.1-flash-lite' },
   { id: 'groq', name: 'Groq', kind: 'openai-compatible', baseUrl: 'https://api.groq.com/openai/v1', authKind: 'bearer', model: 'llama-3.3-70b-versatile' },
   { id: 'together', name: 'Together AI', kind: 'openai-compatible', baseUrl: 'https://api.together.xyz/v1', authKind: 'bearer', model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo' },
+  { id: 'cursor', name: 'Cursor', kind: 'cursor', baseUrl: 'https://api2.cursor.sh', authKind: 'bearer', model: 'composer-2.5' },
   { id: 'ollama', name: 'Ollama', kind: 'ollama', baseUrl: 'http://localhost:11434/v1', authKind: 'none', model: 'llama3.2' },
   { id: 'lm-studio', name: 'LM Studio', kind: 'openai-compatible', baseUrl: 'http://localhost:1234/v1', authKind: 'none', model: 'local-model' },
 ];
@@ -35,6 +36,7 @@ export function visionModelIds(models: readonly ModelInfo[]): string[] {
 function inferKind(baseUrl: string, id: string): ProviderKind {
   if (id === 'gateway' || baseUrl.startsWith('/')) return 'gateway';
   if (baseUrl.includes('openrouter.ai')) return 'openrouter';
+  if (baseUrl.includes('api2.cursor.sh')) return 'cursor';
   if (id === 'google' || baseUrl.includes('generativelanguage.googleapis.com')) return 'google';
   if (baseUrl.includes('localhost:11434') || baseUrl.includes('127.0.0.1:11434')) return 'ollama';
   return 'openai-compatible';
@@ -138,6 +140,7 @@ export function providerKindLabel(kind: ProviderKind): string {
   switch (kind) {
     case 'gateway': return 'Managed gateway';
     case 'openrouter': return 'OpenRouter';
+    case 'cursor': return 'Cursor subscription';
     case 'google': return 'Google Gemini';
     case 'ollama': return 'Ollama';
     case 'anthropic': return 'Anthropic';

@@ -104,7 +104,7 @@ export interface ThreadDraft {
 
 export const chatMode = (chat: Chat): AppMode => chat.mode ?? 'chat';
 
-export type ProviderKind = 'gateway' | 'openrouter' | 'openai-compatible' | 'google' | 'ollama' | 'anthropic';
+export type ProviderKind = 'gateway' | 'openrouter' | 'openai-compatible' | 'google' | 'ollama' | 'anthropic' | 'cursor';
 export type ProviderAuthKind = 'bearer' | 'none';
 export type ProviderConnectionStatus = 'untested' | 'testing' | 'connected' | 'error';
 export type ModelCapability = 'auto' | 'vision' | 'text-only';

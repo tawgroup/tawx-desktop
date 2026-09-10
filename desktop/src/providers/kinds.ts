@@ -11,6 +11,7 @@
  */
 
 import { AnthropicProvider } from './anthropic.js';
+import { CursorProvider } from './cursor.js';
 import { ApiError, ErrorType } from './errors.js';
 import { GoogleProvider } from './google.js';
 import { LocalProvider } from './local.js';
@@ -24,6 +25,8 @@ export const ProviderKind = {
   Google: 'google',
   OpenRouter: 'openrouter',
   Anthropic: 'anthropic',
+  /** A Cursor subscription, reached over its own protobuf agent protocol. */
+  Cursor: 'cursor',
   /** OpenAI-compatible but unauthenticated, with /api/tags as the model-list fallback. */
   Ollama: 'ollama',
 } as const;
@@ -53,6 +56,8 @@ export const PROVIDER_KINDS: Record<ProviderKindValue, ProviderConstructor> = {
     new OpenRouterProvider({ apiKey: spec.apiKey ?? '', baseUrl: spec.baseUrl, fetchImpl: spec.fetchImpl }),
   [ProviderKind.Anthropic]: (spec) =>
     new AnthropicProvider({ apiKey: spec.apiKey ?? '', baseUrl: spec.baseUrl, fetchImpl: spec.fetchImpl }),
+  [ProviderKind.Cursor]: (spec) =>
+    new CursorProvider({ apiKey: spec.apiKey ?? '', baseUrl: spec.baseUrl }),
   [ProviderKind.Ollama]: (spec) => new LocalProvider({ baseUrl: spec.baseUrl, fetchImpl: spec.fetchImpl }),
 };
 
