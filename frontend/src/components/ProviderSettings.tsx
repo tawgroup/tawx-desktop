@@ -55,6 +55,81 @@ function statusLabel(provider: Provider): string {
   return 'Not tested';
 }
 
+/**
+ * `Other model…` has to be a value no provider would ever return, since it
+ * shares the option list with real model ids.
+ */
+const OTHER_MODEL = '\u0000other';
+
+/**
+ * A model id: chosen from the provider's catalog when there is one, typed when
+ * there is not.
+ *
+ * Every provider reports its catalog the same way — `listModels` on the way in,
+ * `discoveredModels` on the record — so no provider needs its ids remembered by
+ * hand. Typing stays reachable through `Other model…` for the cases a catalog
+ * cannot cover: a provider not probed yet, or a selector the list omits.
+ *
+ * Manual mode remembers *which* catalog it was chosen against, so a catalog
+ * arriving (or changing) returns the field to the list without an effect to
+ * synchronize. Identity would not do: the vision field rebuilds its array on
+ * every render.
+ */
+function ModelField({ id, label, value, models, disabled, placeholder, hint, onChange }: {
+  id: string;
+  label: string;
+  value: string;
+  models: string[];
+  disabled?: boolean;
+  placeholder?: string;
+  hint?: string;
+  onChange: (model: string) => void;
+}) {
+  const catalog = models.join('\n');
+  const [manualFor, setManualFor] = useState<string | null>(null);
+  const manual = models.length === 0 || manualFor === catalog;
+  // A stored model missing from the catalog keeps its place rather than being
+  // silently swapped for the first option.
+  const options = value && !models.includes(value) ? [value, ...models] : models;
+
+  return (
+    <div>
+      <label className="label" htmlFor={id}>{label}</label>
+      {manual ? (
+        <input
+          id={id}
+          className="input"
+          value={value}
+          disabled={disabled}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      ) : (
+        <select
+          id={id}
+          className="input"
+          value={value}
+          disabled={disabled}
+          onChange={(event) => {
+            if (event.target.value === OTHER_MODEL) return setManualFor(catalog);
+            onChange(event.target.value);
+          }}
+        >
+          {!value && <option value="">Choose a model</option>}
+          {options.map((model) => <option key={model} value={model}>{model}</option>)}
+          <option value={OTHER_MODEL}>Other model…</option>
+        </select>
+      )}
+      {manual && models.length > 0 && (
+        <button type="button" className="mt-1 text-xs text-accent hover:underline" onClick={() => setManualFor(null)}>
+          Choose from the list
+        </button>
+      )}
+      {hint && <p className="hint">{hint}</p>}
+    </div>
+  );
+}
+
 export default function ProviderSettings() {
   const settings = useSettings((state) => state.settings);
   const update = useSettings((state) => state.update);
@@ -189,8 +264,17 @@ export default function ProviderSettings() {
         }
         setFeedback({
           ok: true,
-          message: `Connected — ${saved?.discoveredModels.length ?? 0} models available.`,
+          message: `Connected — ${saved?.discoveredModels.length ?? 0} models available. Pick the default model, then save.`,
         });
+        // A catalog exists only once the record does, so this is the first
+        // moment the list can be shown at all. Closing the form here is what
+        // left people typing model ids from memory; it stays open on the saved
+        // provider instead, with the catalog now in the picker.
+        if (saved) {
+          setEditingId(saved.id);
+          setDraft({ ...saved, apiKey: '' });
+        }
+        return;
       } catch (error) {
         setFeedback({ ok: false, message: connectionError(error) });
         return;
@@ -205,7 +289,9 @@ export default function ProviderSettings() {
   };
 
   const save = async (testFirst: boolean) => {
-    if (!draft?.baseUrl.trim() || !draft.model.trim()) return;
+    // A test is how the model list arrives, so it cannot be the thing that
+    // demands a model first. Saving without one still can.
+    if (!draft?.baseUrl.trim() || (!testFirst && !draft.model.trim())) return;
     const urlError = validateProviderBaseUrl(draft.baseUrl);
     if (urlError) {
       setFeedback({ ok: false, message: urlError });
@@ -391,10 +477,18 @@ export default function ProviderSettings() {
               {managed && <p className="hint">Stored in the system keychain by the desktop app, not in this browser profile.</p>}
             </div>
           )}
-          <div><label className="label" htmlFor="provider-model">Default model</label><input id="provider-model" className="input" list="provider-models" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder="model-id" /><datalist id="provider-models">{draft.discoveredModels.map((model) => <option key={model} value={model} />)}</datalist></div>
+          <ModelField
+            id="provider-model"
+            label="Default model"
+            value={draft.model}
+            models={draft.discoveredModels}
+            placeholder="model-id"
+            hint={draft.discoveredModels.length ? undefined : 'Test & save to load this provider\u2019s model list.'}
+            onChange={(model) => setDraft({ ...draft, model })}
+          />
           {feedback && <p role="status" className={feedback.ok ? 'text-xs text-green-600 dark:text-green-400' : 'text-xs text-red-600 dark:text-red-400'}>{feedback.message}</p>}
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => void save(true)} disabled={!draft.baseUrl.trim() || !draft.model.trim() || testingId !== null} className="btn-primary">{testingId && <IconSpinner className="h-4 w-4" />} Test &amp; save</button>
+            <button onClick={() => void save(true)} disabled={!draft.baseUrl.trim() || testingId !== null} className="btn-primary">{testingId && <IconSpinner className="h-4 w-4" />} Test &amp; save</button>
             <button onClick={() => void save(false)} disabled={!draft.baseUrl.trim() || !draft.model.trim()} className="btn-ghost border border-surface-200 dark:border-surface-700">Save without testing</button>
             <button onClick={() => { setDraft(null); setEditingId(null); setFeedback(null); }} className="btn-ghost">Cancel</button>
           </div>
@@ -422,21 +516,15 @@ export default function ProviderSettings() {
               ))}
             </select>
           </div>
-          <div>
-            <label className="label" htmlFor="vision-model">Vision model</label>
-            <input
-              id="vision-model"
-              className="input"
-              list="vision-models"
-              disabled={!visionProvider}
-              value={settings.visionModel}
-              onChange={(event) => void update({ visionModel: event.target.value })}
-              placeholder={DEFAULT_VISION_MODEL}
-            />
-            <datalist id="vision-models">
-              {visionModels.map((model) => <option key={model} value={model} />)}
-            </datalist>
-          </div>
+          <ModelField
+            id="vision-model"
+            label="Vision model"
+            value={settings.visionModel}
+            models={visionModels}
+            disabled={!visionProvider}
+            placeholder={DEFAULT_VISION_MODEL}
+            onChange={(model) => void update({ visionModel: model })}
+          />
         </div>
         {activeProvider && (
           <div className="mt-3">
