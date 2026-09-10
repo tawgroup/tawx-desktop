@@ -118,7 +118,7 @@ function MessageBubble({ message, isStreaming }: Props) {
               <AttachmentTray attachments={message.attachments} />
             )}
             {message.content && (
-              <div className="whitespace-pre-wrap break-words rounded-3xl rounded-tr-md
+              <div className="content-text whitespace-pre-wrap break-words rounded-3xl rounded-tr-md
                               bg-surface-100 px-4 py-2.5 text-[15px] leading-7
                               dark:bg-surface-800">
                 {message.content}

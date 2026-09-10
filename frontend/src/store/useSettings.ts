@@ -114,7 +114,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
 
     if (!desktop) {
       set({ settings: stored, loaded: true, providerBackend: 'local' });
-      applyTheme(stored.theme);
+      applyAppearance(stored);
       return;
     }
 
@@ -131,13 +131,13 @@ export const useSettings = create<SettingsState>((set, get) => ({
     const settings: Settings = { ...stored, providers, activeProviderId: active?.id ?? '' };
 
     set({ settings, loaded: true, providerBackend: 'desktop' });
-    applyTheme(settings.theme);
+    applyAppearance(settings);
   },
 
   update: async (patch) => {
     const settings = { ...get().settings, ...patch };
     set({ settings });
-    if (patch.theme) applyTheme(patch.theme);
+    if (patch.theme || patch.contentFont || patch.contentSize) applyAppearance(settings);
     await persist(settings);
   },
 
@@ -263,7 +263,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
   wipe: async () => {
     await clearAll();
     set({ settings: DEFAULT_SETTINGS });
-    applyTheme(DEFAULT_SETTINGS.theme);
+    applyAppearance(DEFAULT_SETTINGS);
   },
 }));
 
@@ -279,10 +279,70 @@ async function persist(settings: Settings): Promise<void> {
   });
 }
 
+/**
+ * Reading is a third theme, not a variant of light: it swaps the surface ramp
+ * (see index.css) so existing markup follows with no change. `dark` and
+ * `reading` are therefore mutually exclusive — both at once would darken the
+ * warm ramp through the markup's own `dark:` variants.
+ */
+/** Theme and message typography are always applied together. */
+export function applyAppearance(settings: Settings): void {
+  applyTheme(settings.theme);
+  applyContentTypography(settings);
+}
+
+/**
+ * Which classes belong on the root element. Separated from the DOM so the one
+ * invariant that matters can be tested: `dark` and `reading` are never both
+ * set. Reading swaps the surface ramp, and the markup picks its dark colours
+ * through `dark:` variants, so the two together would darken twice.
+ */
+export function themeClasses(
+  theme: Settings['theme'],
+  prefersDark: boolean,
+): { dark: boolean; reading: boolean } {
+  if (theme === 'reading') return { dark: false, reading: true };
+  return { dark: theme === 'dark' || (theme === 'system' && prefersDark), reading: false };
+}
+
 export function applyTheme(theme: Settings['theme']): void {
+  const { dark, reading } = themeClasses(
+    theme,
+    window.matchMedia('(prefers-color-scheme: dark)').matches,
+  );
   const root = document.documentElement;
-  const dark =
-    theme === 'dark' ||
-    (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
   root.classList.toggle('dark', dark);
+  root.classList.toggle('reading', reading);
+}
+
+const CONTENT_SIZES: Record<Settings['contentSize'], { size: string; leading: string }> = {
+  sm: { size: '14px', leading: '1.7' },
+  md: { size: '15px', leading: '1.75' },
+  lg: { size: '17px', leading: '1.8' },
+  xl: { size: '19px', leading: '1.85' },
+};
+
+export const CONTENT_FONTS: Record<Settings['contentFont'], string> = {
+  sans: 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif',
+  serif: 'Charter, "Iowan Old Style", Palatino, Georgia, serif',
+};
+
+/** The values the root custom properties get. Pure, so it can be tested. */
+export function contentTypography(
+  settings: Pick<Settings, 'contentFont' | 'contentSize'>,
+): { size: string; leading: string; font: string } {
+  const { size, leading } = CONTENT_SIZES[settings.contentSize] ?? CONTENT_SIZES.md;
+  return { size, leading, font: CONTENT_FONTS[settings.contentFont] ?? CONTENT_FONTS.sans };
+}
+
+/**
+ * Message typography only. The UI chrome keeps one size so controls stay
+ * predictable; use the View menu's zoom to scale everything.
+ */
+export function applyContentTypography(settings: Pick<Settings, 'contentFont' | 'contentSize'>): void {
+  const { size, leading, font } = contentTypography(settings);
+  const root = document.documentElement;
+  root.style.setProperty('--content-size', size);
+  root.style.setProperty('--content-leading', leading);
+  root.style.setProperty('--content-font', font);
 }

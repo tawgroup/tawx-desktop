@@ -3,6 +3,62 @@
 @tailwind utilities;
 
 @layer base {
+  /*
+   * The neutral ramp light and dark mode both use. Dark mode reads these
+   * unchanged and picks its colours through `dark:` variants in the markup.
+   */
+  :root {
+    --surface-0: 255 255 255;
+    --surface-50: 249 249 249;
+    --surface-100: 236 236 236;
+    --surface-200: 228 228 231;
+    --surface-300: 212 212 216;
+    --surface-400: 161 161 170;
+    --surface-500: 113 113 122;
+    --surface-600: 82 82 91;
+    --surface-700: 63 63 70;
+    --surface-800: 39 39 42;
+    --surface-850: 31 31 35;
+    --surface-900: 24 24 27;
+    --surface-950: 15 15 16;
+    --surface-1000: 10 10 11;
+
+    --accent: 16 163 127;
+    --accent-hover: 13 138 108;
+
+    /* Message text. Independent of UI chrome, which stays sans at one size. */
+    --content-font: theme('fontFamily.sans');
+    --content-size: 15px;
+    --content-leading: 1.75;
+  }
+
+  /*
+   * Reading: warm paper. It swaps the ramp rather than adding a variant, so
+   * every existing `bg-surface-*` and `text-surface-*` follows with no markup
+   * change. `.dark` is never set at the same time, so `dark:` stays inert.
+   */
+  .reading {
+    --surface-0: 244 236 216;
+    --surface-50: 239 230 207;
+    --surface-100: 232 220 192;
+    --surface-200: 222 208 175;
+    --surface-300: 205 187 148;
+    --surface-400: 168 154 120;
+    --surface-500: 138 125 97;
+    --surface-600: 107 96 73;
+    --surface-700: 85 76 58;
+    --surface-800: 64 57 43;
+    --surface-850: 56 50 35;
+    --surface-900: 58 50 38;
+    --surface-950: 44 38 28;
+    --surface-1000: 34 29 21;
+
+    /* The default green reaches only 2.6:1 on warm paper, which is too little
+     * for link text. Darkened to about 5:1. */
+    --accent: 10 107 83;
+    --accent-hover: 8 84 65;
+  }
+
   html,
   body,
   #root {
@@ -60,9 +116,18 @@
   }
 }
 
+/* A user message is content as well, so it follows the same typography. */
+.content-text {
+  font-family: var(--content-font);
+  font-size: var(--content-size);
+  line-height: var(--content-leading);
+}
+
 /* Markdown rendering */
 .prose-chat {
-  @apply text-[15px] leading-7;
+  font-family: var(--content-font);
+  font-size: var(--content-size);
+  line-height: var(--content-leading);
 }
 
 .prose-chat > * + * {

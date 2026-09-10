@@ -130,7 +130,10 @@ export interface Settings {
   temperature: number;
   maxTokens: number | null;
   systemPrompt: string;
-  theme: 'light' | 'dark' | 'system';
+  theme: 'light' | 'dark' | 'system' | 'reading';
+  /** Typeface for message text only; the UI chrome stays sans. */
+  contentFont: 'sans' | 'serif';
+  contentSize: 'sm' | 'md' | 'lg' | 'xl';
   streaming: boolean;
   sendOnEnter: boolean;
   webSearch: boolean;
@@ -406,6 +409,8 @@ export const DEFAULT_SETTINGS: Settings = {
   maxTokens: null,
   systemPrompt: '',
   theme: 'system',
+  contentFont: 'sans',
+  contentSize: 'md',
   streaming: true,
   sendOnEnter: true,
   webSearch: false,

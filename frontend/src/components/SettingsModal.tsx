@@ -169,7 +169,7 @@ export default function SettingsModal({ open, onClose }: Props) {
               Appearance
             </h3>
             <div className="flex gap-2">
-              {(['light', 'dark', 'system'] as const).map((theme) => (
+              {(['light', 'dark', 'system', 'reading'] as const).map((theme) => (
                 <button
                   key={theme}
                   onClick={() => void update({ theme })}
@@ -182,6 +182,53 @@ export default function SettingsModal({ open, onClose }: Props) {
                   {theme}
                 </button>
               ))}
+            </div>
+
+            <div className="mt-3">
+              <label className="label">Message text</label>
+              <div className="flex gap-2">
+                {([
+                  ['sm', 'Small'],
+                  ['md', 'Medium'],
+                  ['lg', 'Large'],
+                  ['xl', 'Larger'],
+                ] as const).map(([size, label]) => (
+                  <button
+                    key={size}
+                    onClick={() => void update({ contentSize: size })}
+                    className={
+                      settings.contentSize === size
+                        ? 'btn-primary flex-1'
+                        : 'btn-ghost flex-1 border border-surface-200 dark:border-surface-700'
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="hint">Applies to messages only. Use View &gt; Zoom to scale the whole app.</p>
+            </div>
+
+            <div className="mt-3">
+              <label className="label">Message typeface</label>
+              <div className="flex gap-2">
+                {([
+                  ['sans', 'Sans'],
+                  ['serif', 'Serif'],
+                ] as const).map(([font, label]) => (
+                  <button
+                    key={font}
+                    onClick={() => void update({ contentFont: font })}
+                    className={
+                      settings.contentFont === font
+                        ? 'btn-primary flex-1'
+                        : 'btn-ghost flex-1 border border-surface-200 dark:border-surface-700'
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
           </section>
 
