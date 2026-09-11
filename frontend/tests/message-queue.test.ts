@@ -26,13 +26,17 @@ test('dequeue leaves the queue it was given alone', () => {
  * stopping is "wait, let me rewrite that", steering is "send it now".
  */
 test('an answer that finished on its own hands over to the queue', () => {
-  assert.equal(shouldFlushQueue({ aborted: false, steered: false }), true);
+  assert.equal(shouldFlushQueue({ aborted: false, failed: false, steered: false }), true);
 });
 
 test('stopping an answer leaves the queue where it is', () => {
-  assert.equal(shouldFlushQueue({ aborted: true, steered: false }), false);
+  assert.equal(shouldFlushQueue({ aborted: true, failed: false, steered: false }), false);
+});
+
+test('a failed answer holds the queue rather than repeating the error', () => {
+  assert.equal(shouldFlushQueue({ aborted: false, failed: true, steered: false }), false);
 });
 
 test('steering sends the queue even though it aborted the answer', () => {
-  assert.equal(shouldFlushQueue({ aborted: true, steered: true }), true);
+  assert.equal(shouldFlushQueue({ aborted: true, failed: false, steered: true }), true);
 });

@@ -207,11 +207,16 @@ export function visibleStreamState(
  * Whether a finished run should hand over to the queue. A run that ended on
  * its own is simply done, so the next message follows; an aborted one was
  * stopped by the reader, and stopping must not fire off the very message they
- * may have stopped to rewrite. Steering is the exception: it aborts precisely
- * in order to send what is queued.
+ * may have stopped to rewrite. A failed one holds too — a provider outage
+ * would otherwise burn the whole queue on the same error, each attempt
+ * clearing the banner that explained the last. Steering is the exception: it
+ * aborts precisely in order to send what is queued.
  */
-export function shouldFlushQueue({ aborted, steered }: { aborted: boolean; steered: boolean }): boolean {
-  return !aborted || steered;
+export function shouldFlushQueue(
+  { aborted, failed, steered }: { aborted: boolean; failed: boolean; steered: boolean },
+): boolean {
+  if (steered) return true;
+  return !aborted && !failed;
 }
 
 /** The next message to send and what stays behind it. */
@@ -240,9 +245,14 @@ function flushQueue(set: Setter, get: Getter, chatId: string): void {
   if (!next) return;
   if (get().activeChatId !== chatId || get().streaming || get().visionProgress) return;
   writeQueue(set, get, chatId, rest);
+  // `send` copies the tray before its first await, so the reader's own
+  // attachments can be lent out and handed straight back.
+  const held = get().attachments;
   set({ attachments: next.attachments });
   const mode = get().activeChat ? chatMode(get().activeChat!) : 'chat';
-  void get().send(next.text, mode).then((sent) => {
+  const accepted = get().send(next.text, mode);
+  set({ attachments: held });
+  void accepted.then((sent) => {
     // A refused send (no provider, context overflow) must not swallow the
     // message: it goes back to the front of the queue for the reader to fix.
     if (!sent) writeQueue(set, get, chatId, [next, ...queueOf(chatId)]);
@@ -824,7 +834,11 @@ export const useChats = create<ChatState>((set, get) => ({
       activeChatId: chatId!,
       activeChat: storedChat,
       messages,
-      attachments: [],
+      // Only what went out is cleared: anything attached while this turn was
+      // being prepared belongs to the next message, not this one.
+      attachments: get().attachments.filter(
+        (attachment) => !pendingAttachments.some((sent) => sent.id === attachment.id),
+      ),
       workspace: storedChat.workspace ?? null,
       policy: storedChat.policy ?? 'ask',
       enabledTools: storedChat.enabledTools ?? [],
@@ -1553,6 +1567,7 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
   });
   let accumulated = '';
   let aborted = false;
+  let runFailed = false;
   let routedModel = model;
   let reasoning = '';
   let cost: number | undefined;
@@ -1655,6 +1670,7 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
         set({ messages: get().messages.filter((message) => message.id !== assistantId) });
       }
     } else {
+      runFailed = true;
       let message = cause instanceof TypeError
         ? 'Network error — check the Base URL and that the endpoint allows CORS.'
         : errorMessage(cause, 'Unknown error');
@@ -1696,6 +1712,6 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
     }
     // Deferred so the chat already reads as idle: `send` refuses to start a
     // turn while `streaming` is still true.
-    if (shouldFlushQueue({ aborted, steered })) queueMicrotask(() => flushQueue(set, get, chatId));
+    if (shouldFlushQueue({ aborted, failed: runFailed, steered })) queueMicrotask(() => flushQueue(set, get, chatId));
   }
 }
