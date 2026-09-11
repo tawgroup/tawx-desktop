@@ -54,29 +54,25 @@ export default function TaskProgress({
   const active = status === 'planning' || status === 'running' || status === 'waiting_approval';
   const percent = todos.length === 0 ? (status === 'completed' ? 100 : 0) : Math.round((completed / todos.length) * 100);
 
+  const meta: string[] = [];
+  if (todos.length > 0) meta.push(`${completed}/${todos.length} steps`);
+  if (mode === 'code' && diffCount > 0) meta.push(`${diffCount} ${diffCount === 1 ? 'diff' : 'diffs'}`);
+  if (artifactCount > 0) meta.push(`${artifactCount} ${artifactCount === 1 ? 'artifact' : 'artifacts'}`);
+  if (contextSummary) meta.push(contextSummary);
+  if (usageSummary) meta.push(usageSummary);
+
   return (
-    <section className="rounded-2xl border border-surface-200 bg-surface-50/80 p-4 shadow-sm dark:border-surface-800 dark:bg-surface-900/70" aria-label="Task progress">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-semibold">{mode === 'code' ? 'Code execution' : 'Task execution'}</h2>
-            <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium', statusStyles[status])}>
-              {(status === 'planning' || status === 'running') && <IconSpinner className="h-3 w-3" />}
-              {statusLabels[status]}
-            </span>
-          </div>
-          {currentAction && (
-            <p className="mt-2 truncate text-xs text-surface-600 dark:text-surface-300">
-              Current action <code className="rounded bg-surface-100 px-1.5 py-0.5 dark:bg-surface-800">{currentAction}</code>
-            </p>
+    <section className="rounded-xl border border-surface-200 bg-surface-50/80 px-3 py-2 shadow-sm dark:border-surface-800 dark:bg-surface-900/70" aria-label="Task progress">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+          <h2 className="text-sm font-semibold">{mode === 'code' ? 'Code execution' : 'Task execution'}</h2>
+          <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium', statusStyles[status])}>
+            {(status === 'planning' || status === 'running') && <IconSpinner className="h-3 w-3" />}
+            {statusLabels[status]}
+          </span>
+          {meta.length > 0 && (
+            <span className="min-w-0 truncate text-xs text-surface-500">{meta.join(' · ')}</span>
           )}
-          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-surface-500">
-            {todos.length > 0 && <span>{completed} of {todos.length} steps complete</span>}
-            {mode === 'code' && diffCount > 0 && <span>{diffCount} {diffCount === 1 ? 'diff' : 'diffs'}</span>}
-            {artifactCount > 0 && <span>{artifactCount} {artifactCount === 1 ? 'artifact' : 'artifacts'}</span>}
-            {contextSummary && <span>{contextSummary}</span>}
-            {usageSummary && <span>{usageSummary}</span>}
-          </div>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -100,16 +96,22 @@ export default function TaskProgress({
         </div>
       </div>
 
-      {(todos.length > 0 || status === 'completed') && (
-        <div className="mt-4" aria-label={`${percent}% complete`}>
-          <div className="h-1.5 overflow-hidden rounded-full bg-surface-200 dark:bg-surface-800">
+      {currentAction && (
+        <p className="mt-1.5 truncate text-xs text-surface-600 dark:text-surface-300">
+          Current action <code className="rounded bg-surface-100 px-1.5 py-0.5 dark:bg-surface-800">{currentAction}</code>
+        </p>
+      )}
+
+      {todos.length > 0 && (
+        <div className="mt-2" aria-label={`${percent}% complete`}>
+          <div className="h-1 overflow-hidden rounded-full bg-surface-200 dark:bg-surface-800">
             <div className="h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${percent}%` }} />
           </div>
         </div>
       )}
 
       {todos.length > 0 && (
-        <ol className="mt-4 space-y-2">
+        <ol className="mt-2.5 space-y-2">
           {todos.map((todo) => (
             <li key={todo.id} className="flex items-start gap-2 text-sm">
               <span
@@ -134,10 +136,10 @@ export default function TaskProgress({
       )}
 
       {status === 'failed' && (
-        <p className="mt-4 text-xs text-surface-500">Execution stopped after an error. Completed steps and the execution record remain available.</p>
+        <p className="mt-1.5 text-xs text-surface-500">Execution stopped after an error. Completed steps and the execution record remain available.</p>
       )}
       {status === 'cancelled' && (
-        <p className="mt-4 text-xs text-surface-500">Execution was cancelled. Its transcript remains available.</p>
+        <p className="mt-1.5 text-xs text-surface-500">Execution was cancelled. Its transcript remains available.</p>
       )}
     </section>
   );
