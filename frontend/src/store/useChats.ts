@@ -100,6 +100,12 @@ export interface ChatState {
   policy: ThreadPolicy;
   enabledTools: string[];
   enabledSkillIds: string[];
+  /**
+   * Skill instructions for Chat. Cowork and Code have the desktop resolve their
+   * own skills while preparing the task, but a Chat turn goes straight to the
+   * provider, so the text has to be in the outbound system message already.
+   */
+  chatSkillPrompt: string;
   context: ContextBudget;
   streaming: boolean;
   /** Id of the assistant message currently being written to. */
@@ -235,6 +241,22 @@ function currentThread(state: ChatState): ThreadDraft {
   };
 }
 
+/**
+ * Reads the skills the desktop would apply to a thread with no workspace, which
+ * is every Chat thread. Returns '' when the UI is served by the Go gateway
+ * instead of the desktop, where the route does not exist.
+ */
+async function fetchChatSkillPrompt(): Promise<string> {
+  try {
+    const response = await fetch('/desktop/skills/instructions', { headers: { Accept: 'application/json' } });
+    if (!response.ok) return '';
+    const payload = await response.json() as { systemPrompt?: unknown };
+    return typeof payload.systemPrompt === 'string' ? payload.systemPrompt : '';
+  } catch {
+    return '';
+  }
+}
+
 const previewCache = new WeakMap<ChatState, ContextPreview>();
 
 /** Stable Zustand selector for the exact next outbound context after compaction. */
@@ -251,8 +273,12 @@ function buildContextPreview(state: ChatState, maxTokens?: number, useVisionAnal
   const systemPrompt = effectiveSystemPrompt(thread);
   const serialized: ChatCompletionMessage[] = [];
   const attachmentsByMessage = new Map<ChatCompletionMessage, Attachment[]>();
-  const systemMessage: ChatCompletionMessage | undefined = systemPrompt.trim()
-    ? { role: 'system', content: systemPrompt.trim() }
+  // Chat carries its skills in the system message; the other modes leave that to
+  // the desktop so the task snapshot records which skills actually ran.
+  const skillPrompt = thread.mode === 'chat' ? state.chatSkillPrompt.trim() : '';
+  const outboundSystemPrompt = [systemPrompt.trim(), skillPrompt].filter(Boolean).join('\n\n');
+  const systemMessage: ChatCompletionMessage | undefined = outboundSystemPrompt
+    ? { role: 'system', content: outboundSystemPrompt }
     : undefined;
   if (systemMessage) serialized.push(systemMessage);
   const projectContext = [...state.messages].reverse().find((message) => message.context)?.context;
@@ -403,6 +429,7 @@ export const useChats = create<ChatState>((set, get) => ({
   policy: initialDraft.policy,
   enabledTools: initialDraft.enabledTools,
   enabledSkillIds: [],
+  chatSkillPrompt: '',
   context: initialContext,
   streaming: false,
   streamingId: null,
@@ -412,6 +439,9 @@ export const useChats = create<ChatState>((set, get) => ({
 
   hydrate: async () => {
     if (!useSettings.getState().loaded) await useSettings.getState().hydrate();
+    void fetchChatSkillPrompt().then((chatSkillPrompt) => {
+      if (chatSkillPrompt !== get().chatSkillPrompt) set({ chatSkillPrompt });
+    });
     await forceFlushAllTaskPersistence(set);
     const [chats, persistedTasks] = await Promise.all([db.listChats(), db.listTasks()]);
     const tasks = Object.fromEntries(persistedTasks.map((task) => [task.id, task]));
@@ -892,7 +922,10 @@ export const useChats = create<ChatState>((set, get) => ({
       workspace: preview.workspace,
       policy: preview.policy,
       enabledTools: preview.enabledTools,
-      enabledSkillIds: preview.enabledSkillIds,
+      // An empty list means the thread has never chosen skills, so it is left
+      // off the request and the desktop resolves the workspace's own selection
+      // (or the default skills) instead of reading it as "enable nothing".
+      ...(preview.enabledSkillIds.length > 0 ? { enabledSkillIds: preview.enabledSkillIds } : {}),
       ...overrides,
     };
 

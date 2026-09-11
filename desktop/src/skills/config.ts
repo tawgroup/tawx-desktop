@@ -14,6 +14,12 @@ export interface SkillSelectionQuery {
 export interface StoredSkillSelection {
   enabledSkillIds: string[];
   inherited: boolean;
+  /**
+   * False when nothing has ever been saved for this workspace, which is how the
+   * runtime tells "the user turned every skill off" apart from "the user has
+   * never opened the skills panel" and may still receive the default set.
+   */
+  configured: boolean;
 }
 
 export interface SkillSelectionUpdate extends SkillSelectionQuery {
@@ -118,11 +124,15 @@ function selectionFrom(config: SkillConfigurationFile, query: SkillSelectionQuer
   const workspace = query.workspace || GLOBAL_WORKSPACE;
   if (query.scope === 'thread') {
     const thread = config.threads.find((entry) => entry.threadId === query.threadId && entry.workspace === workspace);
-    if (thread) return { enabledSkillIds: [...thread.enabledSkillIds], inherited: false };
+    if (thread) return { enabledSkillIds: [...thread.enabledSkillIds], inherited: false, configured: true };
   }
 
   const project = config.projects.find((entry) => entry.workspace === workspace);
-  return { enabledSkillIds: [...(project?.enabledSkillIds ?? [])], inherited: query.scope === 'thread' };
+  return {
+    enabledSkillIds: [...(project?.enabledSkillIds ?? [])],
+    inherited: query.scope === 'thread',
+    configured: project !== undefined,
+  };
 }
 
 function validateQuery(query: SkillSelectionQuery): void {

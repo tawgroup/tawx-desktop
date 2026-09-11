@@ -392,7 +392,12 @@ export interface DesktopTaskRequest {
   workspace?: Workspace;
   policy: ThreadPolicy;
   enabledTools: string[];
-  enabledSkillIds: string[];
+  /**
+   * Omitted when the thread has no explicit selection, which is what lets the
+   * desktop fall back to the saved project selection and, failing that, to the
+   * default skills. Sending `[]` instead would read as "enable nothing".
+   */
+  enabledSkillIds?: string[];
 }
 
 export interface DesktopPendingApproval {

@@ -88,7 +88,7 @@ export function createCoworkTask(
     workspace: request.workspace,
     policy: request.policy,
     enabledTools: [...request.enabledTools],
-    enabledSkillIds: [...request.enabledSkillIds],
+    enabledSkillIds: [...(request.enabledSkillIds ?? [])],
     createdAt: now,
     updatedAt: now,
     events: [],

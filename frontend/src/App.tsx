@@ -47,6 +47,7 @@ export default function App() {
   const messages = useChats((s) => s.messages);
   const activeTask = useChats((s) => s.activeTask);
   const contextPreview = useChats(selectContextPreview);
+  const chatSkillPrompt = useChats((s) => s.chatSkillPrompt);
   const setThreadSystemPrompt = useChats((s) => s.setThreadSystemPrompt);
 
   useEffect(() => {
@@ -74,7 +75,7 @@ export default function App() {
     ? activeThread.systemPrompt ?? settings.systemPrompt
     : draftThread.systemPrompt;
   const promptActive = contextPreview.systemPrompt.trim().length > 0;
-  const skillsConfigured = mode !== 'chat' && contextPreview.enabledSkillIds.length > 0;
+  const skillsConfigured = mode === 'chat' ? chatSkillPrompt.trim().length > 0 : contextPreview.enabledSkillIds.length > 0;
   const promptControlActive = promptActive || skillsConfigured;
   const promptControlLabel = promptActive ? 'Prompt active' : skillsConfigured ? 'Skills active' : 'No prompt';
   const legacyDefault = Boolean(

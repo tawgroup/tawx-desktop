@@ -142,10 +142,102 @@ test('persists project and thread selections and resolves them as guarded instru
       threadId: 'thread-inheriting',
     });
     assert.deepEqual(resolved.enabledSkills.map((skill) => skill.id), [selected.id]);
-    assert.match(resolved.systemPrompt, /User-selected local skills/);
+    assert.match(resolved.systemPrompt, /The local skills selected for this session/);
     assert.match(resolved.systemPrompt, /not authorization to execute anything/);
     assert.match(resolved.systemPrompt, /Example command: `rm -rf \/`/);
   } finally {
     await fixture.cleanup();
+  }
+});
+
+/**
+ * A workspace that has never saved a selection still gets the learning skills,
+ * and saving any selection — including an empty one — takes that default away.
+ */
+test('enables the default skills until a workspace saves its own selection', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'tawx-skill-defaults-'));
+  try {
+    const userSkills = join(base, 'user-skills');
+    for (const name of ['learn-anything', 'probe-knowledge', 'write-a-brief']) {
+      await mkdir(join(userSkills, name), { recursive: true });
+      await writeFile(
+        join(userSkills, name, 'SKILL.md'),
+        `---\nname: ${name}\ndescription: ${name} description.\n---\n\nBody of ${name}.`,
+      );
+    }
+    const configPath = join(base, 'config', 'skills.json');
+    const runtime = createSkillsRuntime({ userSkillDirectories: [userSkills], configPath });
+    const server = await startTestServer(async (request, response) => {
+      const handled = await runtime.handleRequest(request, response, new URL(request.url ?? '/', 'http://127.0.0.1'));
+      if (!handled) {
+        response.writeHead(404);
+        response.end();
+      }
+    });
+
+    try {
+      const workspace = join(base, 'project');
+      await mkdir(workspace, { recursive: true });
+
+      const unconfigured = await fetchCatalog(server.url, workspace);
+      assert.deepEqual(
+        unconfigured.enabledSkillIds.map((id) => unconfigured.skills.find((skill) => skill.id === id)!.name).sort(),
+        ['learn-anything', 'probe-knowledge'],
+      );
+
+      const defaults = await runtime.resolveInstructions({ workspace });
+      assert.deepEqual(defaults.enabledSkills.map((skill) => skill.name).sort(), ['learn-anything', 'probe-knowledge']);
+      assert.match(defaults.systemPrompt, /Body of learn-anything/);
+
+      // Chat has no workspace at all and still gets them, over HTTP.
+      const instructions = await fetch(`${server.url}/desktop/skills/instructions`);
+      assert.equal(instructions.status, 200);
+      const payload = await instructions.json() as { systemPrompt: string; enabledSkills: Array<{ name: string }> };
+      assert.deepEqual(payload.enabledSkills.map((skill) => skill.name).sort(), ['learn-anything', 'probe-knowledge']);
+      assert.match(payload.systemPrompt, /Body of probe-knowledge/);
+
+      const chosen = unconfigured.skills.find((skill) => skill.name === 'write-a-brief')!;
+      const update = await fetch(`${server.url}/desktop/skills/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace, scope: 'project', enabledSkillIds: [chosen.id] }),
+      });
+      assert.equal(update.status, 200);
+      const configured = await runtime.resolveInstructions({ workspace });
+      assert.deepEqual(configured.enabledSkills.map((skill) => skill.name), ['write-a-brief']);
+
+      const cleared = await fetch(`${server.url}/desktop/skills/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace, scope: 'project', enabledSkillIds: [] }),
+      });
+      assert.equal(cleared.status, 200);
+      assert.equal((await runtime.resolveInstructions({ workspace })).systemPrompt, '');
+
+      // An explicit empty selection on the request still means "no skills".
+      assert.equal((await runtime.resolveInstructions({ enabledSkillIds: [] })).systemPrompt, '');
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a default skill that is not installed is silently absent', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'tawx-skill-missing-'));
+  try {
+    const userSkills = join(base, 'user-skills');
+    await mkdir(userSkills, { recursive: true });
+    const runtime = createSkillsRuntime({
+      userSkillDirectories: [userSkills],
+      configPath: join(base, 'config', 'skills.json'),
+    });
+    const resolved = await runtime.resolveInstructions({});
+    assert.deepEqual(resolved.enabledSkills, []);
+    assert.deepEqual(resolved.unavailableSkillIds, []);
+    assert.equal(resolved.systemPrompt, '');
+  } finally {
+    await rm(base, { recursive: true, force: true });
   }
 });
