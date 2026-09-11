@@ -23,13 +23,20 @@ export class ApiError extends Error {
   readonly type: ErrorTypeValue;
   readonly param?: string;
   readonly code?: string;
+  /**
+   * The upstream HTTP status, when the error came from a response rather than
+   * from us. Kept off `toJSON` so the wire shape stays the OpenAI envelope; it
+   * is for callers deciding whether a failure is worth retrying differently.
+   */
+  readonly status?: number;
 
-  constructor(message: string, type: ErrorTypeValue, code?: string, param?: string) {
+  constructor(message: string, type: ErrorTypeValue, code?: string, param?: string, status?: number) {
     super(message);
     this.name = 'ApiError';
     this.type = type;
     this.code = code;
     this.param = param;
+    this.status = status;
   }
 
   toJSON() {

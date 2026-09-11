@@ -579,10 +579,12 @@ function priorMessages(messages: Message[]): Message[] {
 }
 
 function conversationKey(model: string, messages: Message[]): string {
+  // Cursor's reasoning is private transport state: OpenAI-compatible clients
+  // replay only the visible transcript. The checkpoint already contains that
+  // reasoning, so including it here makes every reasoning turn miss its cache.
   const transcript = messages.map((message) => ({
     role: message.role,
     content: textOf(message),
-    ...(message.reasoning ? { reasoning: message.reasoning } : {}),
   }));
   return createHash('sha256').update(JSON.stringify([model, transcript])).digest('hex');
 }

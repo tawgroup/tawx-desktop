@@ -115,6 +115,8 @@ export class OpenAiProvider implements Provider {
           parsed.error.message,
           (parsed.error.type as ErrorTypeValue) ?? ErrorType.Server,
           parsed.error.code,
+          undefined,
+          statusCode,
         );
       }
     } catch {
@@ -123,13 +125,13 @@ export class OpenAiProvider implements Provider {
 
     switch (statusCode) {
       case 401:
-        return new ApiError('invalid API key', ErrorType.Authentication);
+        return new ApiError('invalid API key', ErrorType.Authentication, undefined, undefined, statusCode);
       case 429:
-        return new ApiError('rate limit exceeded', ErrorType.RateLimit);
+        return new ApiError('rate limit exceeded', ErrorType.RateLimit, undefined, undefined, statusCode);
       case 404:
-        return new ApiError('resource not found', ErrorType.NotFound);
+        return new ApiError('resource not found', ErrorType.NotFound, undefined, undefined, statusCode);
       default:
-        return new ApiError(`OpenAI API error: ${body}`, ErrorType.Server);
+        return new ApiError(`OpenAI API error: ${body}`, ErrorType.Server, undefined, undefined, statusCode);
     }
   }
 }
