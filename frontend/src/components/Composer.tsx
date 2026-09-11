@@ -33,6 +33,10 @@ export default function Composer({ mode, onOpenSettings }: Props) {
   const send = useChats((s) => s.send);
   const stop = useChats((s) => s.stop);
   const streaming = useChats((s) => s.streaming);
+  const queued = useChats((s) => s.queued);
+  const queueMessage = useChats((s) => s.queueMessage);
+  const removeQueued = useChats((s) => s.removeQueued);
+  const steer = useChats((s) => s.steer);
   const visionProgress = useChats((s) => s.visionProgress);
   const activeChatId = useChats((s) => s.activeChatId);
   const attachments = useChats((s) => s.attachments);
@@ -62,6 +66,9 @@ export default function Composer({ mode, onOpenSettings }: Props) {
   });
   const hasProvider = provider !== null;
   const canCompose = mode !== 'chat' || hasProvider;
+  // Cowork and Code run a task per thread and refuse a second one, so only a
+  // chat turn has something sensible to queue behind.
+  const canQueue = mode === 'chat' && activeChatId !== null;
   const webSupported = provider ? supportsWebSearch(provider.kind, provider.model) : false;
   const hasPendingImages = attachments.some((attachment) => attachment.kind === 'image');
   const visionFallbackNeeded = hasPendingImages && needsVisionFallback(mode, settings, provider);
@@ -127,7 +134,15 @@ export default function Composer({ mode, onOpenSettings }: Props) {
 
   const submit = () => {
     const value = text.trim();
-    if ((!value && !attachments.length) || streaming || preparingAttachments) return;
+    if ((!value && !attachments.length) || preparingAttachments) return;
+    if (streaming) {
+      // Enter mid-answer is never a mistake: the message waits its turn
+      // instead of being dropped on the floor.
+      if (!canQueue) return;
+      setAttachmentErrors([]);
+      if (queueMessage(text)) setText('');
+      return;
+    }
     setAttachmentErrors([]);
     const submitted = text;
     const accepted = send(value, mode);
@@ -135,6 +150,15 @@ export default function Composer({ mode, onOpenSettings }: Props) {
     void accepted.then((sent) => {
       if (sent) setText((current) => (current === submitted ? '' : current));
     });
+  };
+
+  /** Pulls a queued message back into the box so it can be rewritten. */
+  const editQueued = (queuedId: string) => {
+    const removed = removeQueued(queuedId);
+    if (!removed) return;
+    if (removed.attachments.length) addAttachments(removed.attachments);
+    setText((current) => (current.trim() ? `${current.replace(/\s+$/, '')}\n${removed.text}` : removed.text));
+    ref.current?.focus();
   };
 
   const addFiles = async (files: readonly File[]) => {
@@ -197,6 +221,39 @@ export default function Composer({ mode, onOpenSettings }: Props) {
                      shadow-sm transition-colors focus-within:border-surface-400
                      dark:border-surface-700 dark:bg-surface-900 dark:focus-within:border-surface-500"
         >
+          {queued.length > 0 && (
+            <ul className="mb-2 flex flex-col gap-1" aria-label="Queued messages">
+              {queued.map((entry, index) => (
+                <li
+                  key={entry.id}
+                  className="flex items-center gap-2 rounded-xl bg-surface-100 px-2 py-1.5 text-xs dark:bg-surface-800"
+                >
+                  <span className="shrink-0 rounded-full bg-surface-200 px-1.5 py-0.5 font-medium text-surface-600
+                                   dark:bg-surface-700 dark:text-surface-300">
+                    {index + 1}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => editQueued(entry.id)}
+                    className="min-w-0 flex-1 truncate text-left text-surface-700 dark:text-surface-200"
+                    title="Edit this queued message"
+                  >
+                    {entry.text || `${entry.attachments.length} attachment${entry.attachments.length === 1 ? '' : 's'}`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeQueued(entry.id)}
+                    className="shrink-0 rounded-full px-1.5 leading-none text-surface-500 hover:bg-surface-200
+                               hover:text-surface-800 dark:hover:bg-surface-700 dark:hover:text-surface-100"
+                    title="Remove from the queue"
+                    aria-label={`Remove queued message ${index + 1}`}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           {attachments.length > 0 && (
             <div className="mb-2 px-1">
               <AttachmentTray attachments={attachments} onRemove={removeAttachment} />
@@ -285,7 +342,7 @@ export default function Composer({ mode, onOpenSettings }: Props) {
               />
               <button
                 type="button"
-                disabled={!canCompose || streaming || preparingAttachments}
+                disabled={!canCompose || (streaming && !canQueue) || preparingAttachments}
                 onClick={() => fileRef.current?.click()}
                 className="rounded-full px-2 py-1 text-lg leading-none text-surface-500 hover:bg-surface-100 disabled:opacity-40 dark:hover:bg-surface-800"
                 title="Attach images or readable files"
@@ -395,6 +452,33 @@ export default function Composer({ mode, onOpenSettings }: Props) {
               )}
             </div>
 
+            {queued.length > 0 && (
+              <button
+                type="button"
+                onClick={steer}
+                disabled={visionProgress !== null}
+                className="shrink-0 rounded-full border border-surface-300 px-2.5 py-1.5 text-xs font-medium
+                           text-surface-700 transition-colors hover:bg-surface-100 disabled:opacity-40
+                           dark:border-surface-600 dark:text-surface-200 dark:hover:bg-surface-800"
+                title={streaming ? 'Stop this answer and send the next queued message now' : 'Send the next queued message now'}
+                aria-label="Steer: send the next queued message now"
+              >
+                Steer
+              </button>
+            )}
+            {streaming && canQueue && (text.trim() || attachments.length > 0) && (
+              <button
+                type="button"
+                onClick={submit}
+                className="shrink-0 rounded-full border border-surface-300 p-2 text-surface-700
+                           transition-colors hover:bg-surface-100 dark:border-surface-600
+                           dark:text-surface-200 dark:hover:bg-surface-800"
+                title="Queue this message for when the answer finishes"
+                aria-label="Queue message"
+              >
+                <IconSend className="h-5 w-5" />
+              </button>
+            )}
             {streaming ? (
               <button onClick={stop} className="shrink-0 rounded-full bg-surface-900 p-2 text-white
                                            transition-opacity hover:opacity-80 dark:bg-surface-100
@@ -417,7 +501,9 @@ export default function Composer({ mode, onOpenSettings }: Props) {
         </div>
 
         <p className="mt-2 hidden text-center text-xs text-surface-700/50 dark:text-surface-200/40 sm:block">
-          {sendOnEnter ? 'Enter to send · Shift+Enter for newline' : 'Ctrl+Enter to send'}
+          {streaming && canQueue
+            ? `${sendOnEnter ? 'Enter' : 'Ctrl+Enter'} to queue · sent when this answer finishes`
+            : sendOnEnter ? 'Enter to send · Shift+Enter for newline' : 'Ctrl+Enter to send'}
         </p>
       </div>
     </div>

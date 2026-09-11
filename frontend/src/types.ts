@@ -28,6 +28,17 @@ export interface Attachment {
   truncated?: boolean;
 }
 
+/**
+ * A message typed while an answer was still streaming. It waits in the
+ * thread's queue and is sent once that answer finishes, or right away when the
+ * reader steers.
+ */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  attachments: Attachment[];
+}
+
 export interface ContextBudget {
   usedTokens: number;
   maxTokens: number;

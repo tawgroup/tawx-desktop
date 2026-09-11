@@ -14,6 +14,7 @@ import {
   type DesktopTaskSnapshot,
   type Message,
   type Provider,
+  type QueuedMessage,
   type TaskApproval,
   type TaskStatus,
   type ThreadDraft,
@@ -111,6 +112,12 @@ export interface ChatState {
   /** Id of the assistant message currently being written to. */
   streamingId: string | null;
   /**
+   * Messages typed while the visible chat was answering. They are sent one at
+   * a time as the chat goes idle, so pressing Enter mid-answer never has to be
+   * a mistake.
+   */
+  queued: QueuedMessage[];
+  /**
    * Every chat with an answer in flight, including ones not on screen. The
    * sidebar shows these, or a chat left to run in the background would look
    * idle.
@@ -127,6 +134,9 @@ export interface ChatState {
   send: SendAction;
   regenerate: () => Promise<void>;
   stop: () => void;
+  queueMessage: (text: string) => boolean;
+  removeQueued: (queuedId: string) => QueuedMessage | null;
+  steer: () => void;
   reanalyzeVision: (messageId: string) => Promise<void>;
   clearError: () => void;
   addAttachments: (attachments: Attachment[]) => void;
@@ -165,6 +175,14 @@ interface RunningCompletion {
   message: Message;
 }
 const completions = new Map<string, RunningCompletion>();
+/**
+ * Messages waiting for their chat to go idle, keyed by chat id. A queue is
+ * kept in memory only: it describes what the reader is about to say in this
+ * sitting, not part of the transcript, and a reload should not resurrect it.
+ */
+const queues = new Map<string, QueuedMessage[]>();
+/** Chats whose answer was cut short on purpose to send a queued message now. */
+const steeredChats = new Set<string>();
 const taskControllers = new Map<string, AbortController>();
 const visionRuns = new Map<string, AbortController>();
 
@@ -185,6 +203,52 @@ export function visibleStreamState(
   }
   return { streaming: false, streamingId: null };
 }
+/**
+ * Whether a finished run should hand over to the queue. A run that ended on
+ * its own is simply done, so the next message follows; an aborted one was
+ * stopped by the reader, and stopping must not fire off the very message they
+ * may have stopped to rewrite. Steering is the exception: it aborts precisely
+ * in order to send what is queued.
+ */
+export function shouldFlushQueue({ aborted, steered }: { aborted: boolean; steered: boolean }): boolean {
+  return !aborted || steered;
+}
+
+/** The next message to send and what stays behind it. */
+export function dequeue(queue: readonly QueuedMessage[]): { next: QueuedMessage | null; rest: QueuedMessage[] } {
+  if (queue.length === 0) return { next: null, rest: [] };
+  return { next: queue[0], rest: queue.slice(1) };
+}
+
+function queueOf(chatId: string | null): QueuedMessage[] {
+  return (chatId ? queues.get(chatId) : undefined) ?? [];
+}
+
+function writeQueue(set: Setter, get: Getter, chatId: string, queue: QueuedMessage[]): void {
+  if (queue.length > 0) queues.set(chatId, queue);
+  else queues.delete(chatId);
+  if (get().activeChatId === chatId) set({ queued: queue });
+}
+
+/**
+ * Sends the head of a chat's queue. Only the chat on screen has its messages
+ * loaded, so a queue on a background chat waits until the reader returns to
+ * it rather than being sent into a thread nobody is watching.
+ */
+function flushQueue(set: Setter, get: Getter, chatId: string): void {
+  const { next, rest } = dequeue(queueOf(chatId));
+  if (!next) return;
+  if (get().activeChatId !== chatId || get().streaming || get().visionProgress) return;
+  writeQueue(set, get, chatId, rest);
+  set({ attachments: next.attachments });
+  const mode = get().activeChat ? chatMode(get().activeChat!) : 'chat';
+  void get().send(next.text, mode).then((sent) => {
+    // A refused send (no provider, context overflow) must not swallow the
+    // message: it goes back to the front of the queue for the reader to fix.
+    if (!sent) writeQueue(set, get, chatId, [next, ...queueOf(chatId)]);
+  });
+}
+
 const TASK_PERSIST_INTERVAL_MS = 250;
 
 interface TaskPersistenceSnapshot {
@@ -433,6 +497,7 @@ export const useChats = create<ChatState>((set, get) => ({
   context: initialContext,
   streaming: false,
   streamingId: null,
+  queued: [],
   runningChatIds: [],
   visionProgress: null,
   error: null,
@@ -477,6 +542,7 @@ export const useChats = create<ChatState>((set, get) => ({
       context: draftThread.context,
       streaming: false,
       streamingId: null,
+      queued: [],
       error: cancellationError,
     });
   },
@@ -504,6 +570,7 @@ export const useChats = create<ChatState>((set, get) => ({
         draftThread,
         streaming: false,
         streamingId: null,
+        queued: [],
         error: null,
       });
       return;
@@ -544,9 +611,13 @@ export const useChats = create<ChatState>((set, get) => ({
         enabledSkillIds: resolvedChat.enabledSkillIds ?? [],
         context: resolvedChat.context ?? emptyContext(useSettings.getState().settings.coworkContextTokens),
       },
+      queued: queues.get(chatId) ?? [],
       ...visibleStreamState(running?.message, task, messages),
       error: null,
     });
+    // A queue left on a background chat could not be sent while its messages
+    // were unloaded; coming back to an idle chat is the moment to send it.
+    flushQueue(set, get, chatId);
     if (task && isTaskActive(task.status)) await get().resumeTask(task.id);
   },
 
@@ -568,6 +639,7 @@ export const useChats = create<ChatState>((set, get) => ({
       draftThread,
       streaming: false,
       streamingId: null,
+      queued: [],
       error: null,
     });
   },
@@ -586,6 +658,8 @@ export const useChats = create<ChatState>((set, get) => ({
     if (chat?.taskId) await disconnectTask(set, chat.taskId);
     // Nothing to write to once the chat is gone.
     completions.get(chatId)?.controller.abort();
+    queues.delete(chatId);
+    steeredChats.delete(chatId);
     await db.deleteChat(chatId);
     const chats = get().chats.filter((candidate) => candidate.id !== chatId);
     const tasks = Object.fromEntries(Object.entries(get().tasks).filter(([, task]) => task.threadId !== chatId));
@@ -609,6 +683,7 @@ export const useChats = create<ChatState>((set, get) => ({
             draftThread,
             streaming: false,
             streamingId: null,
+            queued: [],
           }
         : {}),
     });
@@ -802,6 +877,46 @@ export const useChats = create<ChatState>((set, get) => ({
     if (chatId) completions.get(chatId)?.controller.abort();
     // streaming clears when the run's finally block removes it from the map;
     // asserting it here would claim the request had already unwound.
+  },
+
+  queueMessage: (text) => {
+    const content = text.trim();
+    const chatId = get().activeChatId;
+    const pendingAttachments = get().attachments;
+    if (!chatId || (!content && pendingAttachments.length === 0)) return false;
+    writeQueue(set, get, chatId, [
+      ...queueOf(chatId),
+      { id: uid(), text: content, attachments: [...pendingAttachments] },
+    ]);
+    set({ attachments: [] });
+    return true;
+  },
+
+  removeQueued: (queuedId) => {
+    const chatId = get().activeChatId;
+    if (!chatId) return null;
+    const queue = queueOf(chatId);
+    const removed = queue.find((entry) => entry.id === queuedId) ?? null;
+    if (!removed) return null;
+    writeQueue(set, get, chatId, queue.filter((entry) => entry.id !== queuedId));
+    return removed;
+  },
+
+  steer: () => {
+    const chatId = get().activeChatId;
+    if (!chatId || queueOf(chatId).length === 0) return;
+    // Image analysis runs before the completion exists, so there is no answer
+    // to cut short and nothing would hand over to the queue.
+    if (get().visionProgress) return;
+    if (get().activeTask && isTaskActive(get().activeTask!.status)) return;
+    const running = completions.get(chatId);
+    if (!running) {
+      flushQueue(set, get, chatId);
+      return;
+    }
+    // The queue is sent from the run's finally block, once it has unwound.
+    steeredChats.add(chatId);
+    running.controller.abort();
   },
 
   reanalyzeVision: async (messageId) => {
@@ -1437,6 +1552,7 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
       : {}),
   });
   let accumulated = '';
+  let aborted = false;
   let routedModel = model;
   let reasoning = '';
   let cost: number | undefined;
@@ -1523,7 +1639,7 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
     };
     await db.saveMessage(final);
   } catch (cause) {
-    const aborted = cause instanceof DOMException && cause.name === 'AbortError';
+    aborted = cause instanceof DOMException && cause.name === 'AbortError';
     if (aborted) {
       if (accumulated || reasoning) {
         await db.saveMessage({
@@ -1573,9 +1689,13 @@ async function runCompletion(set: Setter, get: Getter, chatId: string, model: st
     }
   } finally {
     completions.delete(chatId);
+    const steered = steeredChats.delete(chatId);
     set({ runningChatIds: [...completions.keys()] });
     if (onScreen()) {
       set(visibleStreamState(completions.get(chatId)?.message, get().activeTask, get().messages));
     }
+    // Deferred so the chat already reads as idle: `send` refuses to start a
+    // turn while `streaming` is still true.
+    if (shouldFlushQueue({ aborted, steered })) queueMicrotask(() => flushQueue(set, get, chatId));
   }
 }
