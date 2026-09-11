@@ -3,6 +3,7 @@ import { useChats } from '../store/useChats';
 import { chatMode, type AppMode, type Chat, type CoworkSection, type TaskStatus } from '../types';
 import { cn, groupByDate } from '../lib/utils';
 import { IconChat, IconClose, IconEdit, IconLock, IconPlus, IconSettings, IconTrash } from './Icons';
+import FocusSoundMenu from './FocusSoundMenu';
 
 const taskStatusLabels: Record<TaskStatus, string> = {
   planning: 'Planning',
@@ -289,6 +290,7 @@ export default function Sidebar({
         </nav>
 
         <div className="safe-bottom border-t border-surface-200 p-2 dark:border-surface-800">
+          <FocusSoundMenu />
           <button
             type="button"
             onClick={() => {

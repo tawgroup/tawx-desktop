@@ -10,6 +10,7 @@ export type TaskStatus =
   | 'failed'
   | 'cancelled';
 export type ApprovalDecision = 'allow_once' | 'allow_session' | 'deny';
+export type FocusSoundId = 'rain' | 'ocean' | 'stream' | 'wind' | 'deep';
 
 export interface Workspace {
   path: string;
@@ -171,6 +172,12 @@ export interface Settings {
   coworkPolicy: ThreadPolicy;
   coworkEnabledTools: string[];
   coworkContextTokens: number;
+  /**
+   * The ambient sound last chosen, and how loud it played. Remembered so
+   * restarting it is one click; playback itself never resumes on its own.
+   */
+  focusSoundPreset: FocusSoundId;
+  focusSoundVolume: number;
 }
 
 export type WebSearchEngine = 'auto' | 'exa' | 'parallel' | 'perplexity';
@@ -466,4 +473,6 @@ export const DEFAULT_SETTINGS: Settings = {
   coworkPolicy: 'ask',
   coworkEnabledTools: DEFAULT_COWORK_TOOLS,
   coworkContextTokens: DEFAULT_CONTEXT_TOKENS,
+  focusSoundPreset: 'rain',
+  focusSoundVolume: 0.5,
 };
