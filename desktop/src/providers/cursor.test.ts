@@ -239,6 +239,45 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
   return chunks;
 }
 
+test('a follow-up request reuses the server checkpoint containing prior conversation', async () => {
+  const requests: FakeRequest[] = [];
+  const checkpoint = concat(
+    encodeBytesField(1, new Uint8Array([1, 2, 3])),
+    encodeBytesField(8, new Uint8Array([4, 5, 6])),
+  );
+  const connect = (() => {
+    const request = new FakeRequest();
+    requests.push(request);
+    const session = Object.assign(new EventEmitter(), {
+      request: () => request,
+      close: () => {},
+    });
+    queueMicrotask(() => {
+      request.emit('response', { ':status': 200 });
+      request.emit('data', serverFrame(encodeMessageField(3, checkpoint)));
+      request.emit('data', interactionUpdate(encodeMessageField(1, encodeStringField(1, 'Graft uses a code graph.'))));
+      request.emit('data', interactionUpdate(encodeMessageField(14, new Uint8Array(0))));
+    });
+    return session;
+  }) as never;
+
+  const provider = new CursorProvider({ apiKey: 'token', connectImpl: connect });
+  await collect(provider.chatCompletionStream(request([{ role: 'user', content: 'Tell me about Graft.' }])));
+  await collect(provider.chatCompletionStream(request([
+    { role: 'user', content: 'Tell me about Graft.' },
+    { role: 'assistant', content: 'Graft uses a code graph.' },
+    { role: 'user', content: 'Does it use an AST?' },
+  ])));
+
+  const secondRun = messageField(requests[1]?.clientMessages()[0] ?? [], 1);
+  const secondState = messageField(secondRun ?? [], 1);
+  assert.deepEqual(
+    secondState,
+    decodeMessage(checkpoint),
+    'the opaque server checkpoint is the only reliable representation of prior turns',
+  );
+});
+
 test('text and thinking deltas arrive as content and reasoning', async () => {
   const { connect } = fakeConnect((req) => {
     req.emit('response', { ':status': 200 });

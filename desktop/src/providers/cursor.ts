@@ -11,11 +11,10 @@
  * docs/cursor-protocol.md, including how to re-derive the field numbers used
  * below when Cursor changes them.
  *
- * The translation is therefore stateful in shape but stateless in fact: the
- * whole conversation is rebuilt from the request's messages on every call, the
- * way the rest of this codebase expects, and Cursor's content-addressed blob
- * store makes resending it cheap — the server asks only for the blobs it is
- * missing.
+ * Cursor owns the opaque representation of prior turns. The adapter caches each
+ * streamed conversation checkpoint and reuses it when the OpenAI-shaped request
+ * contains the matching transcript. Reconstructing turns locally is only a
+ * fallback for conversations created before this provider instance.
  *
  * Tools are deliberately not wired up. Cursor's agent API expects its own tool
  * vocabulary (`piBashArgs`, `piEditArgs`, …) with the server driving execution,
@@ -80,6 +79,7 @@ export class CursorProvider implements Provider {
   private readonly baseUrl: string;
   private readonly clientVersion: string;
   private readonly connectImpl: typeof http2Connect;
+  private readonly conversations = new Map<string, CursorConversation>();
 
   constructor(options: CursorOptions) {
     this.apiKey = options.apiKey;
@@ -129,8 +129,10 @@ export class CursorProvider implements Provider {
 
     const id = `chatcmpl-${randomUUID()}`;
     const created = Math.floor(Date.now() / 1000);
-    const blobs = new BlobStore();
-    const body = buildRunRequest(req, blobs);
+    const prior = this.conversations.get(conversationKey(req.model, priorMessages(req.messages)));
+    const blobs = prior?.blobs ?? new BlobStore();
+    const conversationId = prior?.conversationId ?? randomUUID();
+    const body = buildRunRequest(req, blobs, prior?.checkpoint, conversationId);
 
     const chunk = (delta: StreamChunk['choices'][0]['delta']): StreamChunk => ({
       id,
@@ -141,10 +143,30 @@ export class CursorProvider implements Provider {
     });
 
     let tokens = 0;
+    let content = '';
+    let reasoning = '';
+    let checkpoint: Uint8Array | undefined;
     for await (const update of this.runStream(body, blobs, signal)) {
-      if (update.kind === 'text') yield chunk({ content: update.text });
-      else if (update.kind === 'thinking') yield chunk({ reasoning: update.text });
-      else if (update.kind === 'tokens') tokens = update.tokens;
+      if (update.kind === 'text') {
+        content += update.text;
+        yield chunk({ content: update.text });
+      } else if (update.kind === 'thinking') {
+        reasoning += update.text;
+        yield chunk({ reasoning: update.text });
+      } else if (update.kind === 'tokens') tokens = update.tokens;
+      else checkpoint = update.checkpoint;
+    }
+
+    if (checkpoint) {
+      const completed = [
+        ...req.messages,
+        { role: 'assistant' as const, content, ...(reasoning ? { reasoning } : {}) },
+      ];
+      this.rememberConversation(conversationKey(req.model, completed), {
+        checkpoint,
+        blobs,
+        conversationId,
+      });
     }
 
     yield {
@@ -155,6 +177,14 @@ export class CursorProvider implements Provider {
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
       usage: { prompt_tokens: 0, completion_tokens: tokens, total_tokens: tokens },
     };
+  }
+
+  private rememberConversation(key: string, conversation: CursorConversation): void {
+    this.conversations.delete(key);
+    this.conversations.set(key, conversation);
+    if (this.conversations.size > 100) {
+      this.conversations.delete(this.conversations.keys().next().value as string);
+    }
   }
 
   async listModels(signal?: AbortSignal): Promise<Model[]> {
@@ -316,6 +346,9 @@ export class CursorProvider implements Provider {
     if (exec) return answerContextQuery(exec, send);
 
     const update = messageField(message, 1);
+    const checkpoint = bytesField(message, 3);
+    if (checkpoint) return push({ kind: 'checkpoint', checkpoint });
+
     if (!update) return;
 
     const text = messageField(update, 1);
@@ -332,10 +365,17 @@ export class CursorProvider implements Provider {
   }
 }
 
+interface CursorConversation {
+  checkpoint: Uint8Array;
+  blobs: BlobStore;
+  conversationId: string;
+}
+
 type RunUpdate =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
-  | { kind: 'tokens'; tokens: number };
+  | { kind: 'tokens'; tokens: number }
+  | { kind: 'checkpoint'; checkpoint: Uint8Array };
 
 /**
  * Content-addressed prompt storage. Cursor keeps whatever it has seen before
@@ -429,7 +469,12 @@ function answerContextQuery(exec: ProtoField[], send: (payload: Uint8Array) => v
  * A request with no trailing user message — a regeneration — sends
  * `resumeAction` instead, which asks Cursor to continue from the state given.
  */
-export function buildRunRequest(req: ChatCompletionRequest, blobs: BlobStore): Uint8Array {
+export function buildRunRequest(
+  req: ChatCompletionRequest,
+  blobs: BlobStore,
+  checkpoint?: Uint8Array,
+  conversationId: string = randomUUID(),
+): Uint8Array {
   const system = req.messages.filter((m) => m.role === 'system');
   const rest = req.messages.filter((m) => m.role !== 'system');
 
@@ -440,14 +485,15 @@ export function buildRunRequest(req: ChatCompletionRequest, blobs: BlobStore): U
   const prompt = last?.role === 'user' ? last : undefined;
   const history = prompt ? rest.slice(0, -1) : rest;
 
-  const rootPrompts = (system.length > 0 ? system.map(textOf) : [DEFAULT_SYSTEM_PROMPT])
-    .filter((content) => content.length > 0)
-    .map((content) => blobs.put(utf8(JSON.stringify({ role: 'system', content }))));
-
-  const conversationState = concat(
-    ...rootPrompts.map((hash) => encodeBytesField(1, hash)),
-    ...buildTurns(history, blobs).map((hash) => encodeBytesField(8, hash)),
-  );
+  const conversationState = checkpoint ?? (() => {
+    const rootPrompts = (system.length > 0 ? system.map(textOf) : [DEFAULT_SYSTEM_PROMPT])
+      .filter((content) => content.length > 0)
+      .map((content) => blobs.put(utf8(JSON.stringify({ role: 'system', content }))));
+    return concat(
+      ...rootPrompts.map((hash) => encodeBytesField(1, hash)),
+      ...buildTurns(history, blobs).map((hash) => encodeBytesField(8, hash)),
+    );
+  })();
 
   const action = prompt
     ? encodeMessageField(1, encodeMessageField(1, encodeUserMessage(textOf(prompt))))
@@ -469,7 +515,7 @@ export function buildRunRequest(req: ChatCompletionRequest, blobs: BlobStore): U
     encodeMessageField(2, action),
     encodeMessageField(3, modelDetails),
     encodeMessageField(9, requestedModel),
-    encodeStringField(5, randomUUID()),
+    encodeStringField(5, conversationId),
   );
   return encodeMessageField(1, runRequest);
 }
@@ -526,6 +572,19 @@ function textOf(message: Message): string {
     .filter((part) => part.type === 'text' && part.text)
     .map((part) => part.text)
     .join('\n');
+}
+
+function priorMessages(messages: Message[]): Message[] {
+  return messages[messages.length - 1]?.role === 'user' ? messages.slice(0, -1) : messages;
+}
+
+function conversationKey(model: string, messages: Message[]): string {
+  const transcript = messages.map((message) => ({
+    role: message.role,
+    content: textOf(message),
+    ...(message.reasoning ? { reasoning: message.reasoning } : {}),
+  }));
+  return createHash('sha256').update(JSON.stringify([model, transcript])).digest('hex');
 }
 
 function utf8(value: string): Uint8Array {
