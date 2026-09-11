@@ -201,19 +201,24 @@ export default function TaskTimeline({ events, mode, approvals, diffs }: TaskTim
   }
 
   return (
-    <section className="rounded-2xl border border-surface-200 bg-white/70 p-4 dark:border-surface-800 dark:bg-surface-900/40" aria-label="Execution transcript">
-      <div className="mb-4 flex items-baseline justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold">Execution transcript</h2>
-          <p className="mt-0.5 text-xs text-surface-500">Lifecycle, tool activity, outputs, and deliverables</p>
-        </div>
-        <span className="text-[11px] text-surface-400">{visibleEventCount} {visibleEventCount === 1 ? 'event' : 'events'}</span>
-      </div>
+    <details
+      className="rounded-xl border border-surface-200 px-3 py-2 dark:border-surface-700"
+      aria-label="Execution transcript"
+    >
+      <summary
+        className="cursor-pointer select-none text-sm text-surface-500 dark:text-surface-400"
+        title="Lifecycle, tool activity, outputs, and deliverables"
+      >
+        Execution transcript
+        <span className="ml-1.5 text-xs text-surface-400">
+          {visibleEventCount} {visibleEventCount === 1 ? 'event' : 'events'}
+        </span>
+      </summary>
 
       {visibleEventCount === 0 ? (
-        <p className="rounded-xl bg-surface-50 px-3 py-4 text-center text-sm text-surface-500 dark:bg-surface-950/40">Waiting for the first execution event.</p>
+        <p className="mt-3 rounded-xl bg-surface-50 px-3 py-4 text-center text-sm text-surface-500 dark:bg-surface-950/40">Waiting for the first execution event.</p>
       ) : (
-        <ol className="relative ml-2 border-l border-surface-200 pl-5 dark:border-surface-800">
+        <ol className="relative ml-2 mt-4 border-l border-surface-200 pl-5 dark:border-surface-800">
           {events.map((event) => {
             if (event.kind === 'assistant_delta' || event.kind === 'reasoning_delta') return null;
             const payload = asRecord(event.payload);
@@ -238,6 +243,6 @@ export default function TaskTimeline({ events, mode, approvals, diffs }: TaskTim
           })}
         </ol>
       )}
-    </section>
+    </details>
   );
 }

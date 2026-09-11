@@ -264,7 +264,7 @@ export default function ChatView({ mode }: { mode: AppMode }) {
             </div>
           )}
 
-          <TaskTimeline events={task.events} approvals={task.approvals} diffs={task.diffs} mode={mode} />
+          <TaskTimeline key={task.id} events={task.events} approvals={task.approvals} diffs={task.diffs} mode={mode} />
         </div>
       )}
 
