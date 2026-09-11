@@ -33,7 +33,7 @@ export const useFocusSound = create<FocusSoundState>((set, get) => ({
     }
     const settings = useSettings.getState();
     const volume = get().pendingVolume ?? settings.settings.focusSoundVolume;
-    void focusSound.play(id, volume);
+    focusSound.play(id, volume);
     set({ playing: id });
     if (settings.settings.focusSoundPreset !== id) void settings.update({ focusSoundPreset: id });
   },

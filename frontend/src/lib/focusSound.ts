@@ -56,14 +56,14 @@ function whiteNoise(ctx: BaseAudioContext): AudioBuffer {
   return buffer;
 }
 
-function noise(ctx: AudioContext): AudioBufferSourceNode {
+function noise(ctx: BaseAudioContext): AudioBufferSourceNode {
   const source = ctx.createBufferSource();
   source.buffer = whiteNoise(ctx);
   source.loop = true;
   return source;
 }
 
-function band(ctx: AudioContext, type: BiquadFilterType, frequency: number, q = 0.7): BiquadFilterNode {
+function band(ctx: BaseAudioContext, type: BiquadFilterType, frequency: number, q = 0.7): BiquadFilterNode {
   const filter = ctx.createBiquadFilter();
   filter.type = type;
   filter.frequency.value = frequency;
@@ -71,14 +71,14 @@ function band(ctx: AudioContext, type: BiquadFilterType, frequency: number, q = 
   return filter;
 }
 
-function level(ctx: AudioContext, value: number): GainNode {
+function level(ctx: BaseAudioContext, value: number): GainNode {
   const node = ctx.createGain();
   node.gain.value = value;
   return node;
 }
 
 /** Adds a slow swell to an AudioParam; the param's own value stays the centre. */
-function sway(ctx: AudioContext, frequency: number, depth: number, target: AudioParam): OscillatorNode {
+function sway(ctx: BaseAudioContext, frequency: number, depth: number, target: AudioParam): OscillatorNode {
   const osc = ctx.createOscillator();
   osc.type = 'sine';
   osc.frequency.value = frequency;
@@ -87,47 +87,54 @@ function sway(ctx: AudioContext, frequency: number, depth: number, target: Audio
   return osc;
 }
 
-type Voice = (ctx: AudioContext, out: AudioNode) => AudioScheduledSourceNode[];
+type Voice = (ctx: BaseAudioContext, out: AudioNode) => AudioScheduledSourceNode[];
 
 const voices: Record<FocusSoundId, Voice> = {
   rain: (ctx, out) => {
+    // Flat lowpassed noise reads as radio static. What makes it rain is
+    // movement: the shower swells and eases, and a brighter layer of spatter
+    // drifts against it on a different period so the two never lock in step.
     const body = noise(ctx);
-    body.connect(band(ctx, 'lowpass', 3200, 0.6)).connect(level(ctx, 0.9)).connect(out);
+    const bodyLevel = level(ctx, 0.78);
+    body.connect(band(ctx, 'lowpass', 2400, 0.6)).connect(bodyLevel).connect(out);
 
-    // A brighter layer riding on top reads as spatter rather than hiss, and the
-    // slow drift keeps the shower from sounding like a frozen sample.
     const spatter = noise(ctx);
-    const spatterLevel = level(ctx, 0.14);
+    const spatterLevel = level(ctx, 0.15);
     spatter.connect(band(ctx, 'highpass', 2600, 0.5)).connect(spatterLevel).connect(out);
 
-    return [body, spatter, sway(ctx, 0.05, 0.07, spatterLevel.gain)];
+    return [
+      body,
+      spatter,
+      sway(ctx, 0.031, 0.12, bodyLevel.gain),
+      sway(ctx, 0.05, 0.06, spatterLevel.gain),
+    ];
   },
 
   ocean: (ctx, out) => {
     const surf = noise(ctx);
-    const swell = level(ctx, 0.9);
+    const swell = level(ctx, 1.6);
     surf.connect(band(ctx, 'lowpass', 460, 0.4)).connect(swell).connect(out);
 
     // Roughly one wave every eleven seconds, never falling all the way silent.
     const foam = noise(ctx);
-    const foamLevel = level(ctx, 0.1);
+    const foamLevel = level(ctx, 0.18);
     foam.connect(band(ctx, 'bandpass', 1800, 0.8)).connect(foamLevel).connect(out);
 
     return [
       surf,
       foam,
-      sway(ctx, 0.09, 0.5, swell.gain),
-      sway(ctx, 0.09, 0.07, foamLevel.gain),
+      sway(ctx, 0.09, 0.89, swell.gain),
+      sway(ctx, 0.09, 0.125, foamLevel.gain),
     ];
   },
 
   stream: (ctx, out) => {
     const flow = noise(ctx);
-    flow.connect(band(ctx, 'lowpass', 900, 0.5)).connect(level(ctx, 0.7)).connect(out);
+    flow.connect(band(ctx, 'lowpass', 900, 0.5)).connect(level(ctx, 1.15)).connect(out);
 
     const trickle = noise(ctx);
     const trickleFilter = band(ctx, 'bandpass', 1500, 1.4);
-    trickle.connect(trickleFilter).connect(level(ctx, 0.5)).connect(out);
+    trickle.connect(trickleFilter).connect(level(ctx, 0.82)).connect(out);
 
     return [flow, trickle, sway(ctx, 0.23, 380, trickleFilter.frequency)];
   },
@@ -135,28 +142,59 @@ const voices: Record<FocusSoundId, Voice> = {
   wind: (ctx, out) => {
     const gust = noise(ctx);
     const gustFilter = band(ctx, 'bandpass', 560, 1.1);
-    const gustLevel = level(ctx, 0.85);
+    const gustLevel = level(ctx, 1.25);
     gust.connect(gustFilter).connect(gustLevel).connect(out);
 
-    return [gust, sway(ctx, 0.06, 260, gustFilter.frequency), sway(ctx, 0.04, 0.3, gustLevel.gain)];
+    return [gust, sway(ctx, 0.06, 260, gustFilter.frequency), sway(ctx, 0.04, 0.44, gustLevel.gain)];
   },
 
   deep: (ctx, out) => {
     // Cutting everything above ~180 Hz throws away most of the energy, so this
-    // one needs a good deal more gain to sit at the same loudness as the rest.
+    // one needs a good deal more gain to sit at the same loudness as the rest —
+    // a little hotter still, since the ear is least sensitive down here.
     const hum = noise(ctx);
-    hum.connect(band(ctx, 'lowpass', 180, 0.5)).connect(level(ctx, 4)).connect(out);
+    hum.connect(band(ctx, 'lowpass', 180, 0.5)).connect(level(ctx, 3.4)).connect(out);
     return [hum];
   },
 };
 
+/**
+ * Builds a preset's graph into `out` and hands back its sources, unstarted.
+ * Takes any context, so the same graph an OfflineAudioContext can render and
+ * measure is the one the speakers get.
+ */
+export function buildVoice(
+  id: FocusSoundId,
+  ctx: BaseAudioContext,
+  out: AudioNode,
+): AudioScheduledSourceNode[] {
+  return voices[id](ctx, out);
+}
+
+/**
+ * A safety limiter for the master bus. Noise has a high crest factor, so a
+ * preset that measures well below full scale can still throw the odd sample
+ * past it at the top of the slider; this catches those without touching the
+ * bed itself, which sits some 25 dB under the threshold.
+ */
+export function createLimiter(ctx: BaseAudioContext): DynamicsCompressorNode {
+  const limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -3;
+  limiter.knee.value = 3;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.003;
+  limiter.release.value = 0.25;
+  return limiter;
+}
+
 interface Session {
   master: GainNode;
+  limiter: DynamicsCompressorNode;
   sources: AudioScheduledSourceNode[];
 }
 
 export interface FocusSoundEngine {
-  play: (id: FocusSoundId, volume: number) => Promise<void>;
+  play: (id: FocusSoundId, volume: number) => void;
   stop: () => void;
   setVolume: (volume: number) => void;
 }
@@ -180,29 +218,37 @@ export function createFocusSoundEngine(
     for (const source of ending.sources) source.stop(now + FADE_SECONDS + 0.05);
     setTimeout(() => {
       ending.master.disconnect();
+      ending.limiter.disconnect();
       // Only park the context if nothing started in the meantime.
       if (!session) void context.suspend();
     }, (FADE_SECONDS + 0.15) * 1000);
   }
 
   return {
-    async play(id, volume) {
+    play(id, volume) {
       const context = ctx ?? (ctx = createContext());
       const previous = session;
       session = null;
       if (previous) release(context, previous);
-      if (context.state === 'suspended') await context.resume();
 
+      const limiter = createLimiter(context);
+      limiter.connect(context.destination);
       const master = context.createGain();
       master.gain.value = SILENT;
-      master.connect(context.destination);
-      const sources = voices[id](context, master);
+      master.connect(limiter);
+      const sources = buildVoice(id, context, master);
 
+      // A suspended context has a frozen currentTime, so the graph can be built
+      // and scheduled now and the fade-in simply begins when it resumes. The
+      // session is published before resuming on purpose: awaiting the resume
+      // first would leave a window where a second click found no session to
+      // stop, and the sound would outlive a UI that had already gone quiet.
       const now = context.currentTime;
       master.gain.setValueAtTime(SILENT, now);
       master.gain.linearRampToValueAtTime(Math.max(gainForVolume(volume), SILENT), now + FADE_SECONDS);
       for (const source of sources) source.start();
-      session = { master, sources };
+      session = { master, limiter, sources };
+      if (context.state === 'suspended') void context.resume();
     },
 
     stop() {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  buildVoice,
   clampVolume,
   createFocusSoundEngine,
   FOCUS_SOUNDS,
@@ -46,4 +47,52 @@ test('nothing reaches the speakers until a preset is played', () => {
   engine.stop();
   engine.setVolume(0.9);
   assert.equal(contexts, 0, 'stop and volume changes must not open an AudioContext');
+});
+
+/** Just enough of the Web Audio surface to record the graph a preset builds. */
+function stubContext() {
+  const connections: string[] = [];
+  const node = (kind: string) => {
+    const self: Record<string, unknown> = {
+      kind,
+      frequency: { value: 0 },
+      Q: { value: 0 },
+      gain: { value: 0 },
+      connect: (target: { kind: string }) => {
+        connections.push(`${kind}->${target.kind}`);
+        return target;
+      },
+    };
+    return self;
+  };
+  return {
+    connections,
+    sampleRate: 44100,
+    createBuffer: (_channels: number, length: number) => ({
+      sampleRate: 44100,
+      getChannelData: () => new Float32Array(length),
+    }),
+    createBufferSource: () => node('source'),
+    createBiquadFilter: () => node('filter'),
+    createGain: () => node('gain'),
+    createOscillator: () => node('oscillator'),
+  };
+}
+
+test('every catalogued preset builds a graph that reaches the output', () => {
+  for (const preset of FOCUS_SOUNDS) {
+    const ctx = stubContext();
+    const out = { kind: 'out' };
+    const sources = buildVoice(preset.id, ctx as unknown as BaseAudioContext, out as unknown as AudioNode);
+
+    assert.ok(sources.length > 0, `${preset.id} builds no sources`);
+    assert.ok(
+      ctx.connections.some((edge) => edge.endsWith('->out')),
+      `${preset.id} never reaches the destination`,
+    );
+    assert.ok(
+      ctx.connections.some((edge) => edge.startsWith('source->')),
+      `${preset.id} has no noise source feeding it`,
+    );
+  }
 });
