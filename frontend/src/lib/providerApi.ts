@@ -6,9 +6,13 @@
  * renderer edits them. The same bundle also ships inside the Go gateway, which
  * has no such surface — `providersSupported` is how the UI finds out which one
  * it is talking to.
+ *
+ * Effect-based inside (Effect.tryPromise + TaggedError via api.ts), Promise
+ * at the boundary so callers keep `await`ing plain promises.
  */
 
-import { ApiError } from './api.ts';
+import { Effect } from 'effect';
+import { ApiHttpError, ApiNetworkError, classifyErrorBody, runPromiseBoundary } from './api.ts';
 import type { ProviderConnectionStatus, ProviderKind } from '../types.ts';
 
 /** A provider as the desktop reports it. Never carries the API key. */
@@ -51,31 +55,58 @@ export interface RemoteProviderPatch {
 
 const BASE = '/desktop/providers';
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init?.headers,
-    },
+function requestEffect<T>(path: string, init?: RequestInit): Effect.Effect<T, ApiHttpError | ApiNetworkError> {
+  return Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: (abortSignal) =>
+        fetch(path, {
+          ...init,
+          headers: {
+            Accept: 'application/json',
+            ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+            ...init?.headers,
+          },
+          signal: init?.signal ? AbortSignal.any([init.signal, abortSignal]) : abortSignal,
+        }),
+      catch: (err) => err,
+    }).pipe(
+      Effect.catchAll((err) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return Effect.fail(err as never);
+        if (err instanceof TypeError) return Effect.fail(err as never);
+        const message = err instanceof Error ? err.message : String(err);
+        return Effect.fail(new ApiNetworkError({ message, reason: 'transport', cause: err }));
+      }),
+    );
+    if (response.status === 204) return undefined as T;
+    const text = yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: (err) => err,
+    }).pipe(
+      Effect.catchAll((err) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return Effect.fail(err as never);
+        if (err instanceof TypeError) return Effect.fail(err as never);
+        const message = err instanceof Error ? err.message : String(err);
+        return Effect.fail(new ApiNetworkError({ message, reason: 'transport', cause: err }));
+      }),
+    );
+    if (!response.ok) {
+      const { message, shape } = classifyErrorBody(text, response.status);
+      return yield* Effect.fail(new ApiHttpError({ message, status: response.status, shape }));
+    }
+    return (yield* Effect.try({
+      try: () => JSON.parse(text) as T,
+      catch: (err) => err,
+    }).pipe(
+      Effect.catchAll((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        return Effect.fail(new ApiNetworkError({ message, reason: 'transport', cause: err }));
+      }),
+    )) as T;
   });
-
-  if (response.status === 204) return undefined as T;
-  const text = await response.text();
-  if (!response.ok) throw new ApiError(errorMessage(text, response.status), response.status);
-  return JSON.parse(text) as T;
 }
 
-function errorMessage(body: string, status: number): string {
-  try {
-    const parsed = JSON.parse(body) as { error?: { message?: string } | string };
-    if (typeof parsed.error === 'string') return parsed.error;
-    if (parsed.error?.message) return parsed.error.message;
-  } catch {
-    // not JSON — fall through
-  }
-  return body.slice(0, 300) || `Request failed with status ${status}`;
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  return runPromiseBoundary(requestEffect<T>(path, init));
 }
 
 /**
@@ -85,12 +116,20 @@ function errorMessage(body: string, status: number): string {
  * Settings list would be worse than rendering the local one.
  */
 export async function providersSupported(): Promise<boolean> {
-  try {
-    const response = await fetch(BASE, { headers: { Accept: 'application/json' } });
-    return response.ok;
-  } catch {
-    return false;
-  }
+  return runPromiseBoundary(providersSupportedEffect());
+}
+
+function providersSupportedEffect(): Effect.Effect<boolean, never> {
+  return Effect.tryPromise({
+    try: (abortSignal) => fetch(BASE, { headers: { Accept: 'application/json' }, signal: abortSignal }),
+    catch: () => false as const,
+  }).pipe(
+    Effect.flatMap((response) => {
+      if (typeof response === 'boolean') return Effect.succeed(false);
+      return Effect.succeed((response as Response).ok);
+    }),
+    Effect.catchAll(() => Effect.succeed(false)),
+  );
 }
 
 export async function listProviders(): Promise<RemoteProvider[]> {

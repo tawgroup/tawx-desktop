@@ -1,4 +1,5 @@
 import { create, type StoreApi } from 'zustand';
+import { Effect } from 'effect';
 import {
   chatMode,
   DEFAULT_CONTEXT_TOKENS,
@@ -29,6 +30,7 @@ import {
   createDesktopTask,
   fetchCompletion,
   fetchDesktopTask,
+  runPromiseBoundary,
   selectDesktopWorkspace,
   streamCompletion,
   streamDesktopTaskEvents,
@@ -321,14 +323,31 @@ function currentThread(state: ChatState): ThreadDraft {
  * instead of the desktop, where the route does not exist.
  */
 async function fetchChatSkillPrompt(): Promise<string> {
-  try {
-    const response = await fetch('/desktop/skills/instructions', { headers: { Accept: 'application/json' } });
-    if (!response.ok) return '';
-    const payload = await response.json() as { systemPrompt?: unknown };
-    return typeof payload.systemPrompt === 'string' ? payload.systemPrompt : '';
-  } catch {
-    return '';
-  }
+  return runPromiseBoundary(fetchChatSkillPromptEffect());
+}
+
+/**
+ * Effect version of the skill-prompt fetch. Any failure (non-ok, network,
+ * bad JSON) becomes '' — refusing to render the chat would be worse than
+ * rendering it without the skill prompt.
+ */
+function fetchChatSkillPromptEffect(): Effect.Effect<string, never> {
+  return Effect.tryPromise({
+    try: (signal) => fetch('/desktop/skills/instructions', { headers: { Accept: 'application/json' }, signal }),
+    catch: () => null,
+  }).pipe(
+    Effect.flatMap((response) => {
+      if (!response || !response.ok) return Effect.succeed('');
+      return Effect.tryPromise({
+        try: () => response.json() as Promise<{ systemPrompt?: unknown }>,
+        catch: () => null,
+      }).pipe(
+        Effect.map((payload) => (payload && typeof payload.systemPrompt === 'string' ? payload.systemPrompt : '')),
+        Effect.catchAll(() => Effect.succeed('')),
+      );
+    }),
+    Effect.catchAll(() => Effect.succeed('')),
+  );
 }
 
 const previewCache = new WeakMap<ChatState, ContextPreview>();
