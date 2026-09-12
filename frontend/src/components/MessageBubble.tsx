@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -6,6 +6,7 @@ import type { Message } from '../types';
 import { cn } from '../lib/utils';
 import AttachmentTray from './AttachmentTray';
 import SolidStreamingText from './SolidStreamingText';
+import { getStreamMode, streamFinish, streamRenderEnd, streamRenderStart } from '../lib/streamPerf';
 import { IconCheck, IconCopy } from './Icons';
 
 interface Props {
@@ -111,6 +112,20 @@ function extractText(node: React.ReactNode): string {
 
 function MessageBubble({ message, isStreaming, onReanalyzeVision, visionCost }: Props) { const isUser = message.role === 'user';
 
+  // Perf sampling (hooks above the early return to keep hook order stable):
+  // t0 is captured during render, closed after commit -> each sample covers
+  // render + commit of the streaming bubble for this token update.
+  const streamMode = !isUser && isStreaming ? getStreamMode() : 'solid';
+  const renderStart = !isUser && isStreaming ? streamRenderStart() : 0;
+  const wasStreaming = useRef(false);
+  useEffect(() => {
+    if (renderStart) streamRenderEnd(renderStart, message.content.length, streamMode === 'react');
+  });
+  useEffect(() => {
+    if (wasStreaming.current && !isStreaming && !isUser) streamFinish(message.id.slice(0, 8));
+    wasStreaming.current = isStreaming;
+  }, [isStreaming, isUser, message.id]);
+
 if (isUser) {
   return (
     <div className="group w-full animate-fade-in">
@@ -213,7 +228,7 @@ return (
             bubble's markdown, no per-token ReactMarkdown re-parse.
             Finished messages still render through ReactMarkdown below.
           */}
-          {isStreaming ? (
+          {isStreaming && streamMode === 'solid' ? (
             <SolidStreamingText
               text={message.content}
               className="whitespace-pre-wrap break-words"
