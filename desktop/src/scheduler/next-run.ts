@@ -1,3 +1,4 @@
+import { Effect } from 'effect';
 import type { ScheduleTrigger, WeeklyTrigger } from './types.js';
 
 const MINUTE_MS = 60_000;
@@ -127,5 +128,33 @@ function parseInstant(value: string, field: string): Date {
   const parsed = new Date(value);
   if (!Number.isFinite(parsed.getTime())) throw new InvalidScheduleTriggerError(`${field} must be a valid ISO-8601 instant`);
   return parsed;
+}
+
+// Effect wrappers (additive): pure cron math stays untouched above; timer and
+// dispatch code composes these Effects instead of try/catch around the
+// throwing functions.
+export function nextRunAfterEffect(
+  trigger: ScheduleTrigger,
+  after: Date,
+): Effect.Effect<Date | null, InvalidScheduleTriggerError> {
+  return Effect.try({
+    try: () => nextRunAfter(trigger, after),
+    catch: (error) =>
+      error instanceof InvalidScheduleTriggerError
+        ? error
+        : new InvalidScheduleTriggerError(String(error)),
+  });
+}
+
+export function validateTriggerEffect(
+  trigger: ScheduleTrigger,
+): Effect.Effect<void, InvalidScheduleTriggerError> {
+  return Effect.try({
+    try: () => validateTrigger(trigger),
+    catch: (error) =>
+      error instanceof InvalidScheduleTriggerError
+        ? error
+        : new InvalidScheduleTriggerError(String(error)),
+  });
 }
 

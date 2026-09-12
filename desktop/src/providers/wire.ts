@@ -7,11 +7,30 @@
  * web search) would go out with a bogus empty "function" field.
  */
 
+import { Effect } from 'effect';
+import { ApiError, ErrorType, runSyncBoundary } from './errors.js';
 import { serializeTool } from './types.js';
 import type { ChatCompletionRequest } from './types.js';
 
 export function serializeRequest(req: ChatCompletionRequest, stream: boolean): string {
-  const wire: Record<string, unknown> = { ...req, stream };
-  if (req.tools) wire.tools = req.tools.map(serializeTool);
-  return JSON.stringify(wire);
+  return runSyncBoundary(serializeRequestEffect(req, stream));
+}
+
+/** Effect version so upstream call sites can stay inside a single Effect chain. */
+export function serializeRequestEffect(
+  req: ChatCompletionRequest,
+  stream: boolean,
+): Effect.Effect<string, ApiError> {
+  return Effect.try({
+    try: () => {
+      const wire: Record<string, unknown> = { ...req, stream };
+      if (req.tools) wire.tools = req.tools.map(serializeTool);
+      return JSON.stringify(wire);
+    },
+    catch: (err) =>
+      new ApiError(
+        `failed to serialize request: ${err instanceof Error ? err.message : String(err)}`,
+        ErrorType.InvalidRequest,
+      ),
+  });
 }

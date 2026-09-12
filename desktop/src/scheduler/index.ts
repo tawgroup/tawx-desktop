@@ -5,7 +5,7 @@ export {
   SchedulerValidationError,
   type SchedulerRuntimeOptions,
 } from './runtime.js';
-export { nextRunAfter, validateTrigger, InvalidScheduleTriggerError } from './next-run.js';
+export { nextRunAfter, nextRunAfterEffect, validateTrigger, validateTriggerEffect, InvalidScheduleTriggerError } from './next-run.js';
 export type {
   CreateScheduleInput,
   IntervalTrigger,

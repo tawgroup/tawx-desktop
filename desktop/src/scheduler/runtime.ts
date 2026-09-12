@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute } from 'node:path';
+import { Effect, Fiber } from 'effect';
 import { redactText, redactValue } from '../tools/security.js';
 import { nextRunAfter, validateTrigger } from './next-run.js';
 import { ScheduleStore } from './store.js';
@@ -19,6 +20,11 @@ import type {
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
 const HISTORY_LIMIT = 100;
 const MISSED_GRACE_MS = 60_000;
+// Structured-concurrency bounds: every provider/router dispatch is a legacy
+// Promise API (see assumptions), so it is wrapped in Effect.tryPromise and
+// guarded by a timeout. A stuck dispatcher can never wedge the timer loop.
+const DISPATCH_TIMEOUT_MS = 30_000;
+const TIMER_RETRY_DELAY_MS = 1_000;
 
 const systemClock: SchedulerClock = {
   now: () => new Date(),
@@ -68,6 +74,10 @@ export class SchedulerRuntime {
   private timer: unknown;
   private started = false;
   private lock: Promise<void> = Promise.resolve();
+  // Structured concurrency: every in-flight dispatch runs as a tracked Effect
+  // fiber. stop() interrupts the whole set, so no dispatch outlives the
+  // runtime (no zombie jobs). Fibers remove themselves via ensuring on exit.
+  private readonly dispatchFibers = new Set<Fiber.RuntimeFiber<void>>();
 
   private constructor(options: SchedulerRuntimeOptions, state: PersistedSchedulerState) {
     this.store = new ScheduleStore(options.directory);
@@ -105,7 +115,7 @@ export class SchedulerRuntime {
       }
 
       if (changed) {
-        await this.store.save(draft);
+        await this.persistState(draft);
         this.state = draft;
       }
       this.started = true;
@@ -113,7 +123,9 @@ export class SchedulerRuntime {
       return dispatches;
     });
 
-    await Promise.all(pending.map((dispatch) => this.launchDispatch(dispatch)));
+    // Dispatch fan-out as a single Effect program: unbounded concurrency with
+    // per-dispatch timeout, tracked in a scope so stop() can interrupt it.
+    await Effect.runPromise(this.dispatchAllEffect(pending));
   }
 
   async stop(): Promise<void> {
@@ -124,6 +136,8 @@ export class SchedulerRuntime {
         this.timer = undefined;
       }
     });
+    // Interrupt every in-flight dispatch fiber: no zombie jobs after stop().
+    await Effect.runPromise(this.interruptDispatchesEffect());
   }
 
   async list(): Promise<ScheduleRecord[]> {
@@ -166,7 +180,7 @@ export class SchedulerRuntime {
       const draft = structuredClone(this.state);
       draft.schedules.push(schedule);
       draft.history[schedule.id] = [];
-      await this.store.save(draft);
+      await this.persistState(draft);
       this.state = draft;
       this.armTimer();
       return structuredClone(schedule);
@@ -194,7 +208,7 @@ export class SchedulerRuntime {
         if (schedule.enabled) schedule.nextRunAt = calculateFreshNextRun(schedule.trigger, now);
       }
       schedule.updatedAt = now.toISOString();
-      await this.store.save(draft);
+      await this.persistState(draft);
       this.state = draft;
       this.armTimer();
       return structuredClone(schedule);
@@ -211,7 +225,7 @@ export class SchedulerRuntime {
       schedule.enabled = enabled;
       schedule.nextRunAt = enabled ? calculateFreshNextRun(schedule.trigger, now) : null;
       schedule.updatedAt = now.toISOString();
-      await this.store.save(draft);
+      await this.persistState(draft);
       this.state = draft;
       this.armTimer();
       return structuredClone(schedule);
@@ -225,7 +239,7 @@ export class SchedulerRuntime {
       if (index === -1) throw new ScheduleNotFoundError(id);
       draft.schedules.splice(index, 1);
       delete draft.history[id];
-      await this.store.save(draft);
+      await this.persistState(draft);
       this.state = draft;
       this.armTimer();
     });
@@ -238,6 +252,57 @@ export class SchedulerRuntime {
       () => undefined,
     );
     return result;
+  }
+
+  // Effect boundary for persistence: store.save keeps its Promise signature
+  // (behavior unchanged); the Effect wrapper adds timeout + typed errors.
+  private persistStateEffect(draft: PersistedSchedulerState): Effect.Effect<void, unknown> {
+    return Effect.tryPromise({
+      try: () => this.store.save(structuredClone(draft)),
+      catch: (error) => error,
+    }).pipe(Effect.timeout(DISPATCH_TIMEOUT_MS), Effect.asVoid);
+  }
+
+  private persistState(draft: PersistedSchedulerState): Promise<void> {
+    return Effect.runPromise(this.persistStateEffect(draft));
+  }
+
+  // Fan-out helper: each dispatch is forked as a tracked fiber inside one
+  // scoped program, so a failure in one never cancels the others and stop()
+  // can interrupt the whole set at once.
+  private dispatchAllEffect(pending: PendingDispatch[]): Effect.Effect<void> {
+    return Effect.forEach(pending, (dispatch) => this.trackedDispatchEffect(dispatch), {
+      concurrency: 'unbounded',
+      discard: true,
+    });
+  }
+
+  private trackedDispatchEffect(pending: PendingDispatch): Effect.Effect<void> {
+    const self = this;
+    return Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkScoped(restore(self.launchDispatchEffect(pending)));
+        yield* Effect.sync(() => {
+          self.dispatchFibers.add(fiber as unknown as Fiber.RuntimeFiber<void>);
+        });
+        yield* Effect.ensuring(
+          Fiber.join(fiber),
+          Effect.sync(() => {
+            self.dispatchFibers.delete(fiber as unknown as Fiber.RuntimeFiber<void>);
+          }),
+        );
+      }),
+    ).pipe(Effect.scoped);
+  }
+
+  private interruptDispatchesEffect(): Effect.Effect<void> {
+    const self = this;
+    return Effect.gen(function* () {
+      const fibers = [...self.dispatchFibers];
+      if (fibers.length === 0) return;
+      yield* Fiber.interruptAll(fibers as Iterable<Fiber.RuntimeFiber<unknown, unknown>>);
+      self.dispatchFibers.clear();
+    });
   }
 
   private armTimer(): void {
@@ -254,10 +319,16 @@ export class SchedulerRuntime {
     }
     if (!Number.isFinite(next)) return;
 
+    // The SchedulerClock stays injected (ManualClock in tests counts handles),
+    // so arming still goes through clock.setTimeout. The callback body, the
+    // retry path, and every dispatch are Effect programs run at this boundary
+    // instead of `void promise.catch`.
     const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, next - this.clock.now().getTime()));
     this.timer = this.clock.setTimeout(() => {
       this.timer = undefined;
-      void this.handleTimer().catch((error) => this.handleTimerFailure(error));
+      Effect.runPromise(this.handleTimerEffect()).catch((error) =>
+        this.handleTimerFailure(error),
+      );
     }, delay);
   }
 
@@ -266,58 +337,87 @@ export class SchedulerRuntime {
     if (!this.started || this.timer !== undefined) return;
     this.timer = this.clock.setTimeout(() => {
       this.timer = undefined;
-      void this.handleTimer().catch((retryError) => this.handleTimerFailure(retryError));
-    }, 1_000);
+      Effect.runPromise(this.handleTimerEffect()).catch((retryError) =>
+        this.handleTimerFailure(retryError),
+      );
+    }, TIMER_RETRY_DELAY_MS);
+  }
+
+  private handleTimerEffect(): Effect.Effect<void, unknown> {
+    const self = this;
+    return Effect.gen(function* () {
+      const pending: PendingDispatch[] = yield* Effect.tryPromise({
+        try: () =>
+          self.exclusive(async () => {
+            if (!self.started) return [];
+            const now = self.clock.now();
+            const draft = structuredClone(self.state);
+            const dispatches: PendingDispatch[] = [];
+            let changed = false;
+            for (const schedule of draft.schedules) {
+              if (!schedule.enabled || schedule.nextRunAt === null) continue;
+              const scheduledTime = Date.parse(schedule.nextRunAt);
+              if (scheduledTime > now.getTime()) continue;
+              changed = true;
+              if (schedule.missedRun === 'skip' && now.getTime() - scheduledTime > MISSED_GRACE_MS) {
+                advanceSchedule(schedule, now);
+                schedule.updatedAt = now.toISOString();
+              } else {
+                dispatches.push(beginExecution(draft, schedule, schedule.nextRunAt, now, self.idFactory));
+              }
+            }
+            if (changed) {
+              await self.persistState(draft);
+              self.state = draft;
+            }
+            self.armTimer();
+            return dispatches;
+          }),
+        catch: (error) => error,
+      });
+      yield* self.dispatchAllEffect(pending);
+    });
   }
 
   private async handleTimer(): Promise<void> {
-    const pending = await this.exclusive(async () => {
-      if (!this.started) return [];
-      const now = this.clock.now();
-      const draft = structuredClone(this.state);
-      const dispatches: PendingDispatch[] = [];
-      let changed = false;
-      for (const schedule of draft.schedules) {
-        if (!schedule.enabled || schedule.nextRunAt === null) continue;
-        const scheduledTime = Date.parse(schedule.nextRunAt);
-        if (scheduledTime > now.getTime()) continue;
-        changed = true;
-        if (schedule.missedRun === 'skip' && now.getTime() - scheduledTime > MISSED_GRACE_MS) {
-          advanceSchedule(schedule, now);
-          schedule.updatedAt = now.toISOString();
-        } else {
-          dispatches.push(beginExecution(draft, schedule, schedule.nextRunAt, now, this.idFactory));
-        }
-      }
-      if (changed) {
-        await this.store.save(draft);
-        this.state = draft;
-      }
-      this.armTimer();
-      return dispatches;
-    });
+    await Effect.runPromise(this.handleTimerEffect());
+  }
 
-    await Promise.all(pending.map((dispatch) => this.launchDispatch(dispatch)));
+  private launchDispatchEffect(pending: PendingDispatch): Effect.Effect<void> {
+    // ASSUMPTION: TaskDispatcher.dispatch is the legacy Promise API owned by
+    // the agent cluster (desktop/src/agent/*). It is NOT converted here;
+    // Effect.tryPromise + timeout wraps it at this boundary.
+    const self = this;
+    return Effect.gen(function* () {
+      const dispatchEffect = Effect.tryPromise({
+        try: () => self.dispatcher.dispatch(structuredClone(pending.task)),
+        catch: (error) => error,
+      }).pipe(Effect.timeout(DISPATCH_TIMEOUT_MS));
+      const outcome = yield* Effect.either(dispatchEffect);
+      if (outcome._tag === 'Right' && outcome.right !== undefined) {
+        const taskId = (outcome.right as { id: string }).id;
+        yield* Effect.tryPromise({
+          try: () => self.finishDispatch(pending, 'dispatched', taskId),
+          catch: (error) => error,
+        }).pipe(
+          Effect.catchAll((persistenceError) =>
+            Effect.sync(() => self.onError?.(persistenceError)),
+          ),
+        );
+        return;
+      }
+      const failure = outcome._tag === 'Left' ? outcome.left : new Error('dispatch timed out');
+      yield* Effect.tryPromise({
+        try: () => self.finishDispatch(pending, 'failed', undefined, redactError(failure)),
+        catch: (error) => error,
+      }).pipe(
+        Effect.catchAll((persistenceError) => Effect.sync(() => self.onError?.(persistenceError))),
+      );
+    });
   }
 
   private async launchDispatch(pending: PendingDispatch): Promise<void> {
-    let taskId: string;
-    try {
-      taskId = (await this.dispatcher.dispatch(structuredClone(pending.task))).id;
-    } catch (error) {
-      try {
-        await this.finishDispatch(pending, 'failed', undefined, redactError(error));
-      } catch (persistenceError) {
-        this.onError?.(persistenceError);
-      }
-      return;
-    }
-
-    try {
-      await this.finishDispatch(pending, 'dispatched', taskId);
-    } catch (persistenceError) {
-      this.onError?.(persistenceError);
-    }
+    await Effect.runPromise(this.launchDispatchEffect(pending));
   }
 
   private async finishDispatch(
@@ -338,7 +438,7 @@ export class SchedulerRuntime {
       if (error !== undefined) execution.error = error;
       const schedule = draft.schedules.find((candidate) => candidate.id === pending.scheduleId);
       if (schedule?.lastRun?.id === execution.id) schedule.lastRun = structuredClone(execution);
-      await this.store.save(draft);
+      await this.persistState(draft);
       this.state = draft;
     });
   }

@@ -1,10 +1,23 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Effect } from 'effect';
 import type { DesktopHttpHandler } from '../agent/types.js';
 import { InvalidScheduleTriggerError } from './next-run.js';
 import { ScheduleNotFoundError, SchedulerRuntime, SchedulerValidationError } from './runtime.js';
 import type { CreateScheduleInput, UpdateScheduleInput } from './types.js';
 
 const MAX_BODY_BYTES = 1_048_576;
+// The HTTP boundary stays Promise-based (gateway contract), but every runtime
+// call runs through an Effect with a timeout so a wedged store/dispatcher
+// fails the request instead of hanging the connection.
+const HANDLER_TIMEOUT_MS = 15_000;
+
+function runHandlerEffect<T>(tryPromise: () => Promise<T>): Promise<T> {
+  return Effect.runPromise(
+    Effect.tryPromise({ try: tryPromise, catch: (error) => error }).pipe(
+      Effect.timeout(HANDLER_TIMEOUT_MS),
+    ),
+  );
+}
 
 /**
  * A compact server extension: return false for non-scheduler URLs so the
@@ -31,12 +44,12 @@ async function routeSchedulerRequest(
   const method = req.method ?? 'GET';
   if (path === '/desktop/schedules') {
     if (method === 'GET') {
-      sendJson(res, 200, { schedules: await runtime.list() });
+      sendJson(res, 200, { schedules: await runHandlerEffect(() => runtime.list()) });
       return;
     }
     if (method === 'POST') {
-      const input = await readJson<CreateScheduleInput>(req);
-      sendJson(res, 201, { schedule: await runtime.create(input) });
+      const input = await runHandlerEffect(() => readJson<CreateScheduleInput>(req));
+      sendJson(res, 201, { schedule: await runHandlerEffect(() => runtime.create(input)) });
       return;
     }
     methodNotAllowed(res, ['GET', 'POST']);
@@ -55,28 +68,28 @@ async function routeSchedulerRequest(
 
   if (action === 'history') {
     if (method !== 'GET') return methodNotAllowed(res, ['GET']);
-    sendJson(res, 200, { history: await runtime.history(id) });
+    sendJson(res, 200, { history: await runHandlerEffect(() => runtime.history(id)) });
     return;
   }
   if (action === 'enable') {
     if (method !== 'POST') return methodNotAllowed(res, ['POST']);
-    const body = await readJson<{ enabled?: unknown }>(req);
+    const body = await runHandlerEffect(() => readJson<{ enabled?: unknown }>(req));
     if (typeof body.enabled !== 'boolean') throw new SchedulerValidationError('enabled must be a boolean');
-    sendJson(res, 200, { schedule: await runtime.setEnabled(id, body.enabled) });
+    sendJson(res, 200, { schedule: await runHandlerEffect(() => runtime.setEnabled(id, body.enabled as boolean)) });
     return;
   }
 
   if (method === 'GET') {
-    sendJson(res, 200, { schedule: await runtime.get(id) });
+    sendJson(res, 200, { schedule: await runHandlerEffect(() => runtime.get(id)) });
     return;
   }
   if (method === 'PUT') {
-    const input = await readJson<UpdateScheduleInput>(req);
-    sendJson(res, 200, { schedule: await runtime.update(id, input) });
+    const input = await runHandlerEffect(() => readJson<UpdateScheduleInput>(req));
+    sendJson(res, 200, { schedule: await runHandlerEffect(() => runtime.update(id, input)) });
     return;
   }
   if (method === 'DELETE') {
-    await runtime.remove(id);
+    await runHandlerEffect(() => runtime.remove(id));
     res.writeHead(204);
     res.end();
     return;

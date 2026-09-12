@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, open, readdir, rename, unlink, writeFile, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
+import { Effect } from 'effect';
 import type { PersistedTask } from './types.js';
 
 const TASK_FILE_MAX_BYTES = 128 * 1024 * 1024;
@@ -14,26 +15,57 @@ export class TaskStore {
   constructor(private readonly directory: string) {}
 
   async load(): Promise<PersistedTask[]> {
-    await mkdir(this.directory, { recursive: true });
-    const entries = await readdir(this.directory, { withFileTypes: true });
-    const tasks: PersistedTask[] = [];
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-      const path = join(this.directory, entry.name);
-      let handle: FileHandle | undefined;
-      try {
-        handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-        const stats = await handle.stat();
-        if (!stats.isFile() || stats.size > TASK_FILE_MAX_BYTES) continue;
-        const value = JSON.parse(await handle.readFile('utf8')) as unknown;
-        if (isPersistedTask(value) && entry.name === `${value.id}.json`) tasks.push(value);
-      } catch {
-        // An unsafe or corrupt task must not prevent recovery of every other thread.
-      } finally {
-        if (handle) await handle.close().catch(() => undefined);
-      }
+    // Promise boundary: directory scan runs as an Effect program; per-file
+    // reads keep the old skip-on-corrupt behavior via catchAll.
+    return Effect.runPromise(this.loadEffect());
+  }
+
+  private loadEffect(): Effect.Effect<PersistedTask[], unknown> {
+    const self = this;
+    return Effect.gen(function* () {
+      yield* Effect.tryPromise({
+        try: () => mkdir(self.directory, { recursive: true }),
+        catch: (error) => error,
+      });
+      const entries = yield* Effect.tryPromise({
+        try: () => readdir(self.directory, { withFileTypes: true }),
+        catch: (error) => error,
+      });
+      const tasks: PersistedTask[] = [];
+      yield* Effect.forEach(
+        entries,
+        (entry) =>
+          Effect.tryPromise({
+            try: () => self.readOne(join(self.directory, entry.name), entry.name, entry.isFile()),
+            catch: () => undefined,
+          }).pipe(
+            Effect.flatMap((task) => Effect.sync(() => {
+              if (task) tasks.push(task);
+            })),
+            Effect.orElseSucceed(() => undefined),
+          ),
+        { concurrency: 'unbounded', discard: true },
+      );
+      return tasks;
+    });
+  }
+
+  private async readOne(path: string, fileName: string, isFile: boolean): Promise<PersistedTask | undefined> {
+    if (!isFile || !fileName.endsWith('.json')) return undefined;
+    let handle: FileHandle | undefined;
+    try {
+      handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const stats = await handle.stat();
+      if (!stats.isFile() || stats.size > TASK_FILE_MAX_BYTES) return undefined;
+      const value = JSON.parse(await handle.readFile('utf8')) as unknown;
+      if (isPersistedTask(value) && fileName === `${value.id}.json`) return value;
+      return undefined;
+    } catch {
+      // An unsafe or corrupt task must not prevent recovery of every other thread.
+      return undefined;
+    } finally {
+      if (handle) await handle.close().catch(() => undefined);
     }
-    return tasks;
   }
 
   save(task: PersistedTask): Promise<void> {
@@ -44,16 +76,25 @@ export class TaskStore {
     }
     const finalPath = join(this.directory, `${task.id}.json`);
     const temporaryPath = join(this.directory, `.${task.id}.${randomUUID()}.tmp`);
-    const write = async (): Promise<void> => {
-      await mkdir(this.directory, { recursive: true });
-      try {
-        await writeFile(temporaryPath, snapshot, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-        await rename(temporaryPath, finalPath);
-      } catch (error) {
-        await unlink(temporaryPath).catch(() => undefined);
-        throw error;
-      }
-    };
+    // The serialized writes-chain is preserved (one atomic replace at a
+    // time per process); each link is now an Effect with ensuring cleanup
+    // of the temp file — no zombie .tmp files on interruption.
+    const write = (): Promise<void> =>
+      Effect.runPromise(
+        Effect.ensuring(
+          Effect.tryPromise({
+            try: () =>
+              mkdir(this.directory, { recursive: true })
+                .then(() => writeFile(temporaryPath, snapshot, { encoding: 'utf8', mode: 0o600, flag: 'wx' }))
+                .then(() => rename(temporaryPath, finalPath)),
+            catch: (error) => error,
+          }),
+          Effect.tryPromise({
+            try: () => unlink(temporaryPath).catch(() => undefined),
+            catch: (error) => error,
+          }).pipe(Effect.ignore),
+        ),
+      );
     this.writes = this.writes.then(write, write);
     return this.writes;
   }

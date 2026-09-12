@@ -13,6 +13,9 @@
  * docs/cursor-protocol.md for how to re-derive them when Cursor moves.
  */
 
+import { Effect } from 'effect';
+import { ApiError, ErrorType, runSyncBoundary } from './errors.js';
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -78,6 +81,24 @@ export interface ProtoField {
 }
 
 export function decodeMessage(buf: Uint8Array): ProtoField[] {
+  return runSyncBoundary(decodeMessageEffect(buf));
+}
+
+/** Effect version so the Cursor exchange can decode inside an Effect chain. */
+export function decodeMessageEffect(buf: Uint8Array): Effect.Effect<ProtoField[], ApiError> {
+  return Effect.try({
+    try: () => decodeMessageSync(buf),
+    catch: (err) =>
+      err instanceof ApiError
+        ? err
+        : new ApiError(
+            `cursor: ${err instanceof Error ? err.message : String(err)}`,
+            ErrorType.Server,
+          ),
+  });
+}
+
+function decodeMessageSync(buf: Uint8Array): ProtoField[] {
   const fields: ProtoField[] = [];
   let i = 0;
   while (i < buf.length) {

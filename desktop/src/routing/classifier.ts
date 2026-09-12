@@ -7,6 +7,7 @@
  * embeddings.go.
  */
 
+import { Cause, Data, Effect, Schedule } from 'effect';
 import { LRUCache, hashKey } from './cache.js';
 import type { ClassifierConfig, RouteConfig } from './config.js';
 import type { RequestInfo } from './routing.js';
@@ -15,6 +16,47 @@ import type { ChatCompletionRequest, ChatCompletionResponse } from '../providers
 interface ClassifiedResult {
   route: string;
   confidence: number;
+}
+
+/** Machine-readable cause of a classification failure. */
+export type ClassifierFailureReason =
+  | 'request-failed'
+  | 'read-body'
+  | 'bad-status'
+  | 'bad-payload'
+  | 'no-choices'
+  | 'non-text-content'
+  | 'unknown-category';
+
+/**
+ * Typed classifier failure. `reason` distinguishes transient transport faults
+ * (`request-failed`, retried below) from permanent ones (bad payload, unknown
+ * category — never retried); `cause` keeps the original error for debugging.
+ */
+export class ClassifierError extends Data.TaggedError('ClassifierError')<{
+  readonly reason: ClassifierFailureReason;
+  readonly message: string;
+  readonly status?: number;
+  readonly cause?: unknown;
+}> {}
+
+/**
+ * Retry policy for the classifier fetch: exponential backoff capped at two
+ * retries. Only transport-level failures are retried (see
+ * `isRetryableFetchError`); HTTP error statuses and malformed payloads fail
+ * fast with their typed error.
+ */
+const classifierFetchRetry = Schedule.intersect(
+  Schedule.exponential('50 millis'),
+  Schedule.recurs(2),
+);
+
+/** Retries transport faults, never aborts-in-flight, validation, or HTTP statuses. */
+function isRetryableFetchError(error: ClassifierError, signal: AbortSignal | undefined): boolean {
+  if (error.reason !== 'request-failed') return false;
+  if (signal?.aborted) return false;
+  const cause = error.cause;
+  return !(cause instanceof Error && cause.name === 'AbortError');
 }
 
 export interface ClassifierMatcherOptions {
@@ -42,15 +84,19 @@ export class ClassifierMatcher {
     this.cache = initClassifierCache(cfg);
   }
 
-  /** Sends the request to an LLM for classification and returns the route and confidence. */
-  async classify(info: RequestInfo, signal?: AbortSignal): Promise<ClassifiedResult> {
+  /**
+   * Effect core of classification: fails with a typed `ClassifierError`
+   * instead of throwing, and retries transient fetch faults with exponential
+   * backoff. The LRU fast-path stays synchronous — a cache hit performs no IO.
+   */
+  classifyEffect(info: RequestInfo, signal?: AbortSignal): Effect.Effect<ClassifiedResult, ClassifierError> {
     let cacheKey = '';
     if (this.cache) {
       const userMsg = lastUserMessage(info);
       if (userMsg !== '') {
         cacheKey = hashKey(userMsg);
         const cached = this.cache.get(cacheKey);
-        if (cached.ok && cached.value) return cached.value;
+        if (cached.ok && cached.value) return Effect.succeed(cached.value);
       }
     }
 
@@ -62,73 +108,144 @@ export class ClassifierMatcher {
       messages: [{ role: 'user', content: prompt }],
     };
 
-    let res: Response;
-    try {
-      res = await this.fetchImpl(`${this.baseUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-        },
-        body: JSON.stringify(reqBody),
-        signal: effectiveSignal,
-      });
-    } catch (err) {
-      throw new Error(`classifier request failed: ${errMessage(err)}`);
-    }
+    const url = `${this.baseUrl}/v1/chat/completions`;
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+    };
 
-    let respBody: string;
-    try {
-      respBody = await res.text();
-    } catch (err) {
-      throw new Error(`failed to read classifier response: ${errMessage(err)}`);
-    }
+    const fetchEffect = Effect.tryPromise({
+      try: async () =>
+        this.fetchImpl(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(reqBody),
+          signal: effectiveSignal,
+        }),
+      catch: (cause) =>
+        new ClassifierError({
+          reason: 'request-failed',
+          message: `classifier request failed: ${errMessage(cause)}`,
+          cause,
+        }),
+    }).pipe(
+      Effect.retry({
+        schedule: classifierFetchRetry,
+        while: (error) => isRetryableFetchError(error, effectiveSignal),
+      }),
+    );
 
+    return fetchEffect.pipe(
+      Effect.flatMap((res) => this.readBodyEffect(res)),
+      Effect.flatMap(({ res, respBody }) => this.parseResponseEffect(res, respBody, cacheKey)),
+    );
+  }
+
+  /**
+   * Promise compatibility boundary: same signature and rejection behavior as
+   * before — rejects with the raw `ClassifierError` (an `Error`), never a
+   * `FiberFailure` wrapper.
+   */
+  async classify(info: RequestInfo, signal?: AbortSignal): Promise<ClassifiedResult> {
+    const exit = await Effect.runPromiseExit(this.classifyEffect(info, signal));
+    if (exit._tag === 'Failure') throw Cause.squash(exit.cause);
+    return exit.value;
+  }
+
+  /** Reads the response body; a truncated body is a typed `read-body` failure. */
+  private readBodyEffect(res: Response): Effect.Effect<{ res: Response; respBody: string }, ClassifierError> {
+    return Effect.tryPromise({
+      try: async () => ({ res, respBody: await res.text() }),
+      catch: (cause) =>
+        new ClassifierError({
+          reason: 'read-body',
+          message: `failed to read classifier response: ${errMessage(cause)}`,
+          cause,
+        }),
+    });
+  }
+
+  /**
+   * Validates status, decodes the chat payload, and resolves the category
+   * against the known routes. Every rejection mode is a typed failure —
+   * nothing here throws.
+   */
+  private parseResponseEffect(
+    res: Response,
+    respBody: string,
+    cacheKey: string,
+  ): Effect.Effect<ClassifiedResult, ClassifierError> {
     // Go checks the exact 200 status, not the broader ok range.
     if (res.status !== 200) {
-      throw new Error(`classifier error ${res.status}: ${respBody}`);
+      return Effect.fail(
+        new ClassifierError({
+          reason: 'bad-status',
+          message: `classifier error ${res.status}: ${respBody}`,
+          status: res.status,
+        }),
+      );
     }
 
-    let chatResp: ChatCompletionResponse;
-    try {
-      chatResp = JSON.parse(respBody) as ChatCompletionResponse;
-    } catch (err) {
-      throw new Error(`failed to unmarshal classifier response: ${errMessage(err)}`);
-    }
-
-    const choice = chatResp.choices?.[0];
-    if (!choice || !choice.message) {
-      throw new Error('classifier returned no choices');
-    }
-
-    // the classifier prompt asks for a plain-text JSON reply, so content is a
-    // string; anything else is an unusable response.
-    const rawContent = choice.message.content;
-    if (typeof rawContent !== 'string') {
-      throw new Error('classifier returned non-text content');
-    }
-
-    // extract JSON from the response (may be wrapped in markdown code blocks)
-    const content = extractJSON(rawContent);
-
-    let result: { category: string; confidence: number };
-    try {
-      result = JSON.parse(content) as { category: string; confidence: number };
-    } catch (err) {
-      throw new Error(`failed to parse classifier output '${content}': ${errMessage(err)}`);
-    }
-
-    // validate the category is a known route
-    for (const r of this.routes) {
-      if (r.name.toLowerCase() === result.category.toLowerCase()) {
-        if (this.cache && cacheKey !== '') {
-          this.cache.put(cacheKey, { route: r.name, confidence: result.confidence });
+    return Effect.try({
+      try: () => JSON.parse(respBody) as ChatCompletionResponse,
+      catch: (cause) =>
+        new ClassifierError({
+          reason: 'bad-payload',
+          message: `failed to unmarshal classifier response: ${errMessage(cause)}`,
+          cause,
+        }),
+    }).pipe(
+      Effect.flatMap((chatResp) => {
+        const choice = chatResp.choices?.[0];
+        if (!choice || !choice.message) {
+          return Effect.fail(
+            new ClassifierError({ reason: 'no-choices', message: 'classifier returned no choices' }),
+          );
         }
-        return { route: r.name, confidence: result.confidence };
-      }
-    }
 
-    throw new Error(`classifier returned unknown category '${result.category}'`);
+        // the classifier prompt asks for a plain-text JSON reply, so content
+        // is a string; anything else is an unusable response.
+        const rawContent = choice.message.content;
+        if (typeof rawContent !== 'string') {
+          return Effect.fail(
+            new ClassifierError({
+              reason: 'non-text-content',
+              message: 'classifier returned non-text content',
+            }),
+          );
+        }
+
+        // extract JSON from the response (may be wrapped in markdown code blocks)
+        const content = extractJSON(rawContent);
+        return Effect.try({
+          try: () => JSON.parse(content) as { category: string; confidence: number },
+          catch: (cause) =>
+            new ClassifierError({
+              reason: 'bad-payload',
+              message: `failed to parse classifier output '${content}': ${errMessage(cause)}`,
+              cause,
+            }),
+        });
+      }),
+      Effect.flatMap((result) => {
+        // validate the category is a known route
+        for (const r of this.routes) {
+          if (r.name.toLowerCase() === result.category.toLowerCase()) {
+            const classified = { route: r.name, confidence: result.confidence };
+            if (this.cache && cacheKey !== '') {
+              this.cache.put(cacheKey, classified);
+            }
+            return Effect.succeed(classified);
+          }
+        }
+        return Effect.fail(
+          new ClassifierError({
+            reason: 'unknown-category',
+            message: `classifier returned unknown category '${result.category}'`,
+          }),
+        );
+      }),
+    );
   }
 
   buildPrompt(info: RequestInfo): string {

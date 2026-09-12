@@ -12,6 +12,7 @@
 
 import { AnthropicProvider } from './anthropic.js';
 import { CursorProvider } from './cursor.js';
+import { Cause, Data, Effect } from 'effect';
 import { ApiError, ErrorType } from './errors.js';
 import { GoogleProvider } from './google.js';
 import { LocalProvider } from './local.js';
@@ -43,6 +44,16 @@ export interface ProviderSpec {
 export type ProviderConstructor = (spec: ProviderSpec) => Provider;
 
 /**
+ * Typed construction failure: the requested kind names no wired vendor.
+ * Converted back to `ApiError` at the `createProvider` boundary (errors.ts is
+ * owned by another cluster — see the shim note in router.ts).
+ */
+export class CreateProviderError extends Data.TaggedError('CreateProviderError')<{
+  readonly kind: string;
+  readonly message: string;
+}> {}
+
+/**
  * A plain record rather than a mutable `register()` registry: adding an entry
  * is just as easy, the set is knowable at compile time, and no import-order
  * accident can leave a kind missing at runtime.
@@ -61,12 +72,27 @@ export const PROVIDER_KINDS: Record<ProviderKindValue, ProviderConstructor> = {
   [ProviderKind.Ollama]: (spec) => new LocalProvider({ baseUrl: spec.baseUrl, fetchImpl: spec.fetchImpl }),
 };
 
-export function createProvider(kind: string, spec: ProviderSpec): Provider {
+export function createProviderEffect(kind: string, spec: ProviderSpec): Effect.Effect<Provider, CreateProviderError> {
   const construct = PROVIDER_KINDS[kind as ProviderKindValue];
   if (!construct) {
-    throw new ApiError(`unknown provider kind '${kind}'`, ErrorType.InvalidRequest);
+    return Effect.fail(new CreateProviderError({ kind, message: `unknown provider kind '${kind}'` }));
   }
-  return construct(spec);
+  return Effect.succeed(construct(spec));
+}
+
+/**
+ * Sync compatibility boundary: same signature and same `ApiError` throw as
+ * before. Runs `createProviderEffect` and maps the typed failure back to
+ * `ApiError` at the edge (see the errors.ts-shim note in router.ts).
+ */
+export function createProvider(kind: string, spec: ProviderSpec): Provider {
+  const exit = Effect.runSyncExit(
+    createProviderEffect(kind, spec).pipe(
+      Effect.mapError((error) => new ApiError(error.message, ErrorType.InvalidRequest)),
+    ),
+  );
+  if (exit._tag === 'Failure') throw Cause.squash(exit.cause);
+  return exit.value;
 }
 
 export function providerKinds(): ProviderKindValue[] {

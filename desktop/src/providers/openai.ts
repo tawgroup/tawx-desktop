@@ -1,7 +1,8 @@
 /** OpenAI provider. Ported from providers/openai.go. */
 
-import { ApiError, ErrorType, type ErrorTypeValue } from './errors.js';
-import { parseStreamChunk, readSseData } from './streaming.js';
+import { Effect, Schedule, Stream } from 'effect';
+import { ApiError, ErrorType, asApiError, runPromiseBoundary, type ErrorTypeValue } from './errors.js';
+import { parseStreamChunkEffect, readSseDataStream } from './streaming.js';
 import { serializeRequest } from './wire.js';
 import { withEstimatedUsageCost } from './pricing.js';
 import type { Provider } from './provider.js';
@@ -14,6 +15,69 @@ import type {
 } from './types.js';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com';
+
+/** Cap for a single upstream call; the caller's AbortSignal still wins first. */
+const UPSTREAM_TIMEOUT = '30 seconds' as const;
+/** Transient transport failures get two spaced retries; HTTP errors do not. */
+const upstreamRetrySchedule = Schedule.intersect(Schedule.exponential('200 millis'), Schedule.recurs(2));
+
+function isAbortLike(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
+}
+
+/**
+ * Only transport-level failures are worth retrying; HTTP statuses (already an
+ * ApiError via parseError) and aborts are final.
+ */
+function isRetryableFetchError(err: unknown): boolean {
+  if (err instanceof ApiError) return false;
+  if (isAbortLike(err)) return false;
+  if ((err as { _tag?: string })?._tag === 'TimeoutException') return false;
+  return err instanceof TypeError;
+}
+
+function mapTimeout(err: unknown): unknown {
+  if ((err as { _tag?: string })?._tag === 'TimeoutException') {
+    return new ApiError('upstream request timed out', ErrorType.Server);
+  }
+  return err;
+}
+
+/**
+ * fetch wrapped as an interruptible Effect: Effect.timeout bounds the call,
+ * Effect.retry replays transient transport failures, and the Effect runtime's
+ * own AbortSignal is combined with the caller's so either side aborts the
+ * request (abort via Effect interrupt). Transport errors stay raw — callers
+ * above (failover, plugin fallback) classify them by shape, exactly as before.
+ */
+function fetchUpstreamEffect(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  outerSignal?: AbortSignal,
+): Effect.Effect<Response, unknown> {
+  const attempt = Effect.tryPromise({
+    try: (abortSignal) =>
+      fetchImpl(url, {
+        ...init,
+        signal: outerSignal ? AbortSignal.any([outerSignal, abortSignal]) : abortSignal,
+      }),
+    catch: (err) => err,
+  }).pipe(
+    Effect.timeout(UPSTREAM_TIMEOUT),
+    Effect.catchAll((err) => Effect.fail(mapTimeout(err))),
+  );
+  return Effect.retry(attempt, { schedule: upstreamRetrySchedule, while: isRetryableFetchError });
+}
+
+function runFetch(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  outerSignal?: AbortSignal,
+): Promise<Response> {
+  return runPromiseBoundary(fetchUpstreamEffect(fetchImpl, url, init, outerSignal));
+}
 
 export interface OpenAiOptions {
   apiKey: string;
@@ -50,57 +114,79 @@ export class OpenAiProvider implements Provider {
     req: ChatCompletionRequest,
     signal?: AbortSignal,
   ): Promise<ChatCompletionResponse> {
-    const res = await this.fetchImpl(`${this.baseUrl}${this.apiPrefix}/chat/completions`, {
-      method: 'POST',
-      headers: this.headers(),
-      body: serializeRequest(req, false),
-      signal,
-    });
+    const program = Effect.gen(this, function* () {
+      const res = yield* fetchUpstreamEffect(this.fetchImpl, `${this.baseUrl}${this.apiPrefix}/chat/completions`, {
+        method: 'POST',
+        headers: this.headers(),
+        body: serializeRequest(req, false),
+      }, signal);
 
-    const text = await res.text();
-    if (!res.ok) throw this.parseError(res.status, text);
+      const text = yield* Effect.tryPromise({
+        try: () => res.text(),
+        catch: (err) => err,
+      });
 
-    try {
-      const result = JSON.parse(text) as ChatCompletionResponse;
+      if (!res.ok) return yield* Effect.fail(this.parseError(res.status, text));
+
+      const result = yield* Effect.try({
+        try: () => JSON.parse(text) as ChatCompletionResponse,
+        catch: (err) =>
+          new ApiError(
+            `failed to unmarshal response: ${err instanceof Error ? err.message : String(err)}`,
+            ErrorType.Server,
+          ),
+      });
       return { ...result, usage: withEstimatedUsageCost(this.baseUrl, req.model, result.usage) };
-    } catch (err) {
-      throw new ApiError(
-        `failed to unmarshal response: ${err instanceof Error ? err.message : String(err)}`,
-        ErrorType.Server,
-      );
-    }
+    });
+    return runPromiseBoundary(program);
   }
 
   async *chatCompletionStream(
     req: ChatCompletionRequest,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamChunk> {
-    const res = await this.fetchImpl(`${this.baseUrl}${this.apiPrefix}/chat/completions`, {
-      method: 'POST',
-      headers: this.headers({ Accept: 'text/event-stream' }),
-      body: serializeRequest(req, true),
+    const res = await runFetch(
+      this.fetchImpl,
+      `${this.baseUrl}${this.apiPrefix}/chat/completions`,
+      {
+        method: 'POST',
+        headers: this.headers({ Accept: 'text/event-stream' }),
+        body: serializeRequest(req, true),
+      },
       signal,
-    });
+    );
 
     if (!res.ok) throw this.parseError(res.status, await res.text());
     if (!res.body) throw new ApiError('upstream returned no body', ErrorType.Server);
 
-    for await (const data of readSseData(res.body)) {
-      const chunk = parseStreamChunk(data);
+    // Stream through the Effect Stream; parse each payload via its Effect so a
+    // mid-stream error envelope fails the iteration instead of yielding junk.
+    const parsed = Stream.mapEffect(readSseDataStream(res.body), (data) => parseStreamChunkEffect(data));
+    for await (const chunk of Stream.toAsyncIterable(parsed)) {
       yield { ...chunk, usage: withEstimatedUsageCost(this.baseUrl, req.model, chunk.usage) };
     }
   }
 
   async listModels(signal?: AbortSignal): Promise<Model[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}${this.apiPrefix}/models`, {
-      headers: { Authorization: `Bearer ${this.apiKey}` },
-      signal,
+    const program = Effect.gen(this, function* () {
+      const res = yield* fetchUpstreamEffect(
+        this.fetchImpl,
+        `${this.baseUrl}${this.apiPrefix}/models`,
+        { headers: { Authorization: `Bearer ${this.apiKey}` } },
+        signal,
+      );
+      if (!res.ok) return yield* Effect.fail(this.parseError(res.status, yield* Effect.tryPromise({
+        try: () => res.text(),
+        catch: (err) => err,
+      })));
+
+      const result = yield* Effect.tryPromise({
+        try: () => res.json() as Promise<ModelsResponse>,
+        catch: (err) => err,
+      });
+      return result.data;
     });
-
-    if (!res.ok) throw this.parseError(res.status, await res.text());
-
-    const result = (await res.json()) as ModelsResponse;
-    return result.data;
+    return runPromiseBoundary(program);
   }
 
   /**

@@ -9,8 +9,9 @@
  * unexported package-private methods directly — can do the same here.
  */
 
-import { ApiError, ErrorType, asApiError, type ErrorTypeValue } from './errors.js';
-import { readSseData } from './streaming.js';
+import { Effect, Schedule, Stream } from 'effect';
+import { ApiError, ErrorType, asApiError, runPromiseBoundary, type ErrorTypeValue } from './errors.js';
+import { readSseDataStream } from './streaming.js';
 import type { Provider } from './provider.js';
 import type {
   ChatCompletionRequest,
@@ -24,6 +25,53 @@ import type {
 } from './types.js';
 
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
+
+const UPSTREAM_TIMEOUT = '30 seconds' as const;
+const upstreamRetrySchedule = Schedule.intersect(Schedule.exponential('200 millis'), Schedule.recurs(2));
+
+function isAbortLike(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
+}
+
+function isRetryableFetchError(err: unknown): boolean {
+  if (err instanceof ApiError) return false;
+  if (isAbortLike(err)) return false;
+  if ((err as { _tag?: string })?._tag === 'TimeoutException') return false;
+  return err instanceof TypeError;
+}
+
+function mapTimeout(err: unknown): unknown {
+  if ((err as { _tag?: string })?._tag === 'TimeoutException') {
+    return new ApiError('upstream request timed out', ErrorType.Server);
+  }
+  return err;
+}
+
+/**
+ * Interruptible fetch: the Effect runtime's AbortSignal joins the caller's so
+ * either side aborts the request, Effect.timeout bounds it, and Effect.retry
+ * replays transient transport failures only. Transport errors stay raw,
+ * exactly as before.
+ */
+function fetchUpstreamEffect(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  outerSignal?: AbortSignal,
+): Effect.Effect<Response, unknown> {
+  const attempt = Effect.tryPromise({
+    try: (abortSignal) =>
+      fetchImpl(url, {
+        ...init,
+        signal: outerSignal ? AbortSignal.any([outerSignal, abortSignal]) : abortSignal,
+      }),
+    catch: (err) => err,
+  }).pipe(
+    Effect.timeout(UPSTREAM_TIMEOUT),
+    Effect.catchAll((err) => Effect.fail(mapTimeout(err))),
+  );
+  return Effect.retry(attempt, { schedule: upstreamRetrySchedule, while: isRetryableFetchError });
+}
 
 export interface AnthropicOptions {
   apiKey: string;
@@ -165,31 +213,35 @@ export class AnthropicProvider implements Provider {
     req: ChatCompletionRequest,
     signal?: AbortSignal,
   ): Promise<ChatCompletionResponse> {
-    const ar = this.translateRequest(req);
-    // stream left unset (omitted from the wire): anthropic defaults to
-    // non-streaming, matching Go's `Stream bool ,omitempty` dropping `false`.
+    const program = Effect.gen(this, function* () {
+      const ar = this.translateRequest(req);
+      // stream left unset (omitted from the wire): anthropic defaults to
+      // non-streaming, matching Go's `Stream bool ,omitempty` dropping `false`.
 
-    const res = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
-      method: 'POST',
-      headers: this.headers(),
-      body: JSON.stringify(ar),
-      signal,
+      const res = yield* fetchUpstreamEffect(this.fetchImpl, `${this.baseUrl}/v1/messages`, {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify(ar),
+      }, signal);
+
+      const text = yield* Effect.tryPromise({
+        try: () => res.text(),
+        catch: (err) => err,
+      });
+      if (!res.ok) return yield* Effect.fail(this.parseError(res.status, text));
+
+      const anthropicResp = yield* Effect.try({
+        try: () => JSON.parse(text) as AnthropicResponse,
+        catch: (err) =>
+          new ApiError(
+            `failed to unmarshal response: ${err instanceof Error ? err.message : String(err)}`,
+            ErrorType.Server,
+          ),
+      });
+
+      return this.translateResponse(anthropicResp, req.model);
     });
-
-    const text = await res.text();
-    if (!res.ok) throw this.parseError(res.status, text);
-
-    let anthropicResp: AnthropicResponse;
-    try {
-      anthropicResp = JSON.parse(text) as AnthropicResponse;
-    } catch (err) {
-      throw new ApiError(
-        `failed to unmarshal response: ${err instanceof Error ? err.message : String(err)}`,
-        ErrorType.Server,
-      );
-    }
-
-    return this.translateResponse(anthropicResp, req.model);
+    return runPromiseBoundary(program);
   }
 
   async *chatCompletionStream(
@@ -199,12 +251,13 @@ export class AnthropicProvider implements Provider {
     const ar = this.translateRequest(req);
     ar.stream = true;
 
-    const res = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
-      method: 'POST',
-      headers: this.headers({ Accept: 'text/event-stream' }),
-      body: JSON.stringify(ar),
-      signal,
-    });
+    const res = await runPromiseBoundary(
+      fetchUpstreamEffect(this.fetchImpl, `${this.baseUrl}/v1/messages`, {
+        method: 'POST',
+        headers: this.headers({ Accept: 'text/event-stream' }),
+        body: JSON.stringify(ar),
+      }, signal),
+    );
 
     if (!res.ok) throw this.parseError(res.status, await res.text());
     if (!res.body) throw new ApiError('upstream returned no body', ErrorType.Server);
@@ -240,16 +293,17 @@ export class AnthropicProvider implements Provider {
     });
 
     try {
-      for await (const data of readSseData(body)) {
-        let event: AnthropicStreamEvent;
-        try {
-          event = JSON.parse(data) as AnthropicStreamEvent;
-        } catch (err) {
-          throw new ApiError(
-            `failed to parse event: ${err instanceof Error ? err.message : String(err)}`,
-            ErrorType.Server,
-          );
-        }
+      const events = Stream.mapEffect(readSseDataStream(body), (data) =>
+        Effect.try({
+          try: () => JSON.parse(data) as AnthropicStreamEvent,
+          catch: (err) =>
+            new ApiError(
+              `failed to parse event: ${err instanceof Error ? err.message : String(err)}`,
+              ErrorType.Server,
+            ),
+        }),
+      );
+      for await (const event of Stream.toAsyncIterable(events)) {
 
         const index = event.index ?? 0;
 

@@ -1,5 +1,6 @@
 /** Model-name to provider routing. Ported from providers/router.go. */
 
+import { Cause, Data, Effect } from 'effect';
 import { ApiError, ErrorType } from './errors.js';
 import type { Provider } from './provider.js';
 
@@ -29,6 +30,26 @@ export interface Route {
   model: string;
 }
 
+/**
+ * Typed routing failure: the model resolved to a provider id that has no
+ * configured provider. Carries both halves of the decision so callers can
+ * report or recover without parsing a message string.
+ *
+ * NOTE: errors.ts is owned by another cluster and left untouched — the sync
+ * `route` boundary below converts this back into the `ApiError` shim the rest
+ * of the codebase (server.ts, agent/runtime.ts, existing tests) expects.
+ */
+export class RouterError extends Data.TaggedError('RouterError')<{
+  readonly providerId: string;
+  readonly model: string;
+  readonly message: string;
+}> {}
+
+/** Boundary shim: typed routing failures surface as `ApiError` (see errors.ts). */
+function toApiError(error: RouterError): ApiError {
+  return new ApiError(error.message, ErrorType.InvalidRequest);
+}
+
 export class Router {
   private readonly byId: Map<string, Provider>;
 
@@ -47,26 +68,45 @@ export class Router {
    * name-prefix rules below decide. The selector is what lets two providers of
    * the same kind — two OpenAI-compatible endpoints, say — coexist, which name
    * sniffing alone cannot express.
+   *
+   * Effect core of routing: fails with a typed `RouterError` instead of
+   * throwing, so Effect callers can match on `_tag` / `providerId` and recover.
    */
-  route(model: string): Route {
+  routeEffect(model: string): Effect.Effect<Route, RouterError> {
     // First slash only: OpenRouter model ids carry slashes of their own, as in
     // openrouter/openai/gpt-4o-mini.
     const separator = model.indexOf('/');
     if (separator > 0) {
       const providerId = model.slice(0, separator);
       const provider = this.byId.get(providerId);
-      if (provider) return { provider, providerId, model: model.slice(separator + 1) };
+      if (provider) return Effect.succeed({ provider, providerId, model: model.slice(separator + 1) });
     }
 
     const providerId = resolveProvider(model);
     const provider = this.byId.get(providerId);
     if (!provider) {
-      throw new ApiError(
-        `provider '${providerId}' not configured for model '${model}'`,
-        ErrorType.InvalidRequest,
+      return Effect.fail(
+        new RouterError({
+          providerId,
+          model,
+          message: `provider '${providerId}' not configured for model '${model}'`,
+        }),
       );
     }
-    return { provider, providerId, model };
+    return Effect.succeed({ provider, providerId, model });
+  }
+
+  /**
+   * Sync compatibility boundary: same signature and same `ApiError` throw as
+   * before — server.ts, agent/runtime.ts and the existing tests call this
+   * directly. Runs `routeEffect` and unwraps the exit (no `FiberFailure`
+   * leaks: `server.ts` maps non-`ApiError` throws to 500 via `asApiError`,
+   * so the mapped `ApiError` must surface raw).
+   */
+  route(model: string): Route {
+    const exit = Effect.runSyncExit(this.routeEffect(model).pipe(Effect.mapError(toApiError)));
+    if (exit._tag === 'Failure') throw Cause.squash(exit.cause);
+    return exit.value;
   }
 
   getProvider(providerId: string): Provider | undefined {

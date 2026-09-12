@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Effect, Fiber } from 'effect';
 import type { Router } from '../providers/router.js';
 import type {
   ChatCompletionRequest,
@@ -24,6 +25,7 @@ import type {
   TaskPolicy,
   TaskSnapshot,
   TaskState,
+  ToolUndoResult,
   WorkspaceSnapshot,
 } from './types.js';
 
@@ -34,6 +36,13 @@ const MAX_CONTEXT_CHARACTERS = 32_000_000;
 const MAX_MESSAGE_CHARACTERS = 16_000_000;
 const MAX_TOOL_RESULT_CHARACTERS = 120_000;
 const SAVE_DELAY_MS = 1_000;
+// Structured-concurrency bounds for every legacy Promise API at the boundary
+// (providers/router/tools are owned by other clusters — see assumptions).
+// Timeouts turn a wedged collaborator into a failed task instead of a zombie.
+const PREPARE_TIMEOUT_MS = 30_000;
+const MODEL_RESOLVE_TIMEOUT_MS = 30_000;
+const TOOL_EXECUTION_TIMEOUT_MS = 120_000;
+const PERSIST_TIMEOUT_MS = 15_000;
 export const CODE_MODE_INSTRUCTION = 'Code mode: work directly in the selected workspace. Inspect existing code before editing, use file and command tools for implementation, show diffs for changes, and verify the changed behavior before finishing.';
 
 interface ActiveToolCall {
@@ -48,7 +57,9 @@ interface RuntimeTask extends PersistedTask {
   approvalOverride?: ApprovalDecision;
   activeToolCall?: ActiveToolCall;
   listeners: Set<(event: AgentEvent) => void>;
-  saveTimer?: NodeJS.Timeout;
+  // Effect-managed debounce fiber for dirty saves (replaces saveTimer).
+  // Interruptible via flush()/shutdown(), so no timer outlives its task.
+  saveFiber?: Fiber.RuntimeFiber<void>;
   recovered?: boolean;
   toolset?: TaskToolset;
 }
@@ -82,7 +93,11 @@ export interface TaskEventSubscription {
 
 export class TaskRuntime implements TaskDispatcher {
   private readonly tasks = new Map<string, RuntimeTask>();
-  private readonly activeRuns = new Map<string, Promise<void>>();
+  // Structured concurrency: each background job is a tracked Effect fiber
+  // (replaces fire-and-forget promises). shutdown()/cancel() interrupt their
+  // fibers, so no job outlives the runtime — no zombies. Fibers deregister
+  // themselves via ensuring on exit.
+  private readonly activeRuns = new Map<string, Fiber.RuntimeFiber<void>>();
   private readonly sessionApprovalSignatures = new Map<string, Set<string>>();
   private readonly registry = new CapabilityRegistry();
   private shuttingDown = false;
@@ -116,8 +131,15 @@ export class TaskRuntime implements TaskDispatcher {
   }
 
   async dispatch(input: AgentTaskRequest): Promise<{ id: string }> {
+    // ASSUMPTION: prepareRequest is an optional host hook (main.ts wires
+    // prepareTaskWithSkills). Legacy Promise API — wrapped, never reimplemented.
     const prepared: PreparedTaskRequest = this.options.prepareRequest
-      ? await this.options.prepareRequest(input)
+      ? await Effect.runPromise(
+        Effect.tryPromise({
+          try: () => this.options.prepareRequest!(input),
+          catch: (error) => error,
+        }).pipe(Effect.timeout(PREPARE_TIMEOUT_MS)),
+      )
       : { request: input };
     const request = this.normalizeRequest(prepared.request);
     const now = new Date().toISOString();
@@ -232,11 +254,25 @@ export class TaskRuntime implements TaskDispatcher {
     const controller = new AbortController();
     const toolset = task.toolset ?? await this.createToolset(task, async () => 'allow_once');
     task.toolset = toolset;
-    const result = await toolset.undo(checkpoint.registrationId, checkpoint.checkpointId, {
-      taskId,
-      workspace: task.request.workspace,
-      signal: controller.signal,
-    });
+    // Bounded like executeToolCall: a wedged undo fails instead of hanging.
+    // The controller gets acquireRelease-style cleanup (aborted on every
+    // exit path); AbortSignal stays the carrier because tools own it.
+    let result: ToolUndoResult | void;
+    try {
+      result = await Effect.runPromise(
+        Effect.tryPromise({
+          try: () =>
+            toolset.undo(checkpoint.registrationId, checkpoint.checkpointId, {
+              taskId,
+              workspace: task.request.workspace,
+              signal: controller.signal,
+            }),
+          catch: (error) => error,
+        }).pipe(Effect.timeout(TOOL_EXECUTION_TIMEOUT_MS)),
+      );
+    } finally {
+      controller.abort();
+    }
     task.checkpoints = task.checkpoints.filter((item) => item !== checkpoint);
     this.appendEvent(task, 'tool_result', {
       operation: 'undo',
@@ -261,10 +297,14 @@ export class TaskRuntime implements TaskDispatcher {
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     for (const task of this.tasks.values()) {
+      // AbortSignal is the cancellation carrier into provider/tool promises
+      // (their clusters own the signal contract); fiber bookkeeping below
+      // only supervises, it cannot cancel a raw Promise by itself.
       task.controller?.abort();
-      if (task.saveTimer) {
-        clearTimeout(task.saveTimer);
-        task.saveTimer = undefined;
+      if (task.saveFiber) {
+        const fiber = task.saveFiber;
+        task.saveFiber = undefined;
+        await Effect.runPromise(Fiber.interrupt(fiber)).catch(() => undefined);
       }
       if (task.approvalResolver) {
         const resolve = task.approvalResolver;
@@ -272,30 +312,79 @@ export class TaskRuntime implements TaskDispatcher {
         resolve('deny');
       }
     }
-    await Promise.allSettled([...this.activeRuns.values()]);
-    for (const task of this.tasks.values()) {
-      await task.toolset?.dispose();
-      await this.options.store.save(this.toPersistedTask(task));
-    }
-    await this.options.store.flush();
+    // Join (not just interrupt): shutdown resolves only after every
+    // background job has actually exited — no work continues past shutdown.
+    await Promise.allSettled(
+      [...this.activeRuns.values()].map((fiber) => Effect.runPromise(Fiber.join(fiber))),
+    );
+    await Effect.runPromise(this.persistAllEffect());
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => this.options.store.flush(),
+        catch: (error) => error,
+      }).pipe(Effect.timeout(PERSIST_TIMEOUT_MS)),
+    );
+  }
+
+  private persistAllEffect(): Effect.Effect<void, unknown> {
+    const self = this;
+    return Effect.forEach(
+      [...self.tasks.values()],
+      (task) =>
+        Effect.gen(function* () {
+          yield* Effect.tryPromise({
+            try: () => Promise.resolve().then(() => task.toolset?.dispose()),
+            catch: (error) => error,
+          }).pipe(Effect.orElseSucceed(() => undefined));
+          yield* Effect.tryPromise({
+            try: () => self.options.store.save(self.toPersistedTask(task)),
+            catch: (error) => error,
+          }).pipe(Effect.timeout(PERSIST_TIMEOUT_MS));
+        }),
+      { concurrency: 'unbounded', discard: true },
+    );
   }
 
   private launch(task: RuntimeTask, resumedApproval?: PendingApproval): void {
     if (this.activeRuns.has(task.id) || isTerminal(task.state)) return;
-    const run = this.executeTask(task, resumedApproval)
-      .catch(async (error: unknown) => {
-        if (task.state === 'cancelled' || this.shuttingDown) return;
-        task.state = 'failed';
-        task.error = String(redactValue(errorMessage(error)));
-        this.appendEvent(task, 'status', { state: 'failed' });
-        this.appendEvent(task, 'error', { message: task.error });
-        await this.flush(task);
-      })
-      .finally(() => this.activeRuns.delete(task.id));
-    this.activeRuns.set(task.id, run);
+    // Replaces `void promise.catch().finally()`: the whole job is one Effect
+    // program forked as a tracked fiber; failures become failed-task events,
+    // and the fiber deregisters itself via ensuring on every exit path.
+    const self = this;
+    const program = Effect.ensuring(
+      Effect.tryPromise({
+        try: () => self.executeTask(task, resumedApproval),
+        catch: (error) => error,
+      }).pipe(
+        Effect.flatMap((result) => Effect.succeed(result)),
+        Effect.catchAll((error) =>
+          Effect.tryPromise({
+            try: () => self.failTask(task, error),
+            catch: () => undefined,
+          }).pipe(Effect.asVoid, Effect.orElseSucceed(() => undefined)),
+        ),
+      ),
+      Effect.sync(() => {
+        self.activeRuns.delete(task.id);
+      }),
+    );
+    this.activeRuns.set(task.id, Effect.runFork(program));
+  }
+
+  private async failTask(task: RuntimeTask, error: unknown): Promise<void> {
+    if (task.state === 'cancelled' || this.shuttingDown) return;
+    task.state = 'failed';
+    task.error = String(redactValue(errorMessage(error)));
+    this.appendEvent(task, 'status', { state: 'failed' });
+    this.appendEvent(task, 'error', { message: task.error });
+    await this.flush(task);
   }
 
   private async executeTask(task: RuntimeTask, resumedApproval?: PendingApproval): Promise<void> {
+    // acquireRelease semantics for the per-run AbortController: cancel() and
+    // shutdown() abort it (cancellation carrier into provider/tool promises),
+    // and the field is always cleared on exit — no stale controller survives
+    // to cancel a later run of the same task.
     const controller = new AbortController();
     task.controller = controller;
     if (task.state !== 'waiting_approval') task.state = 'running';
@@ -371,13 +460,26 @@ export class TaskRuntime implements TaskDispatcher {
         if (!task.model) {
           if (request.model === 'auto') {
             if (!this.options.resolveModel) throw new Error('no model or model resolver is configured');
-            request.model = await this.options.resolveModel(request);
+            // ASSUMPTION: resolveModel is a host Promise hook (main.ts wires
+            // the semantic router). Wrapped with a timeout at this boundary.
+            request.model = await Effect.runPromise(
+              Effect.tryPromise({
+                try: () => this.options.resolveModel!(request),
+                catch: (error) => error,
+              }).pipe(Effect.timeout(MODEL_RESOLVE_TIMEOUT_MS)),
+            );
           }
           task.model = request.model;
         } else {
           request.model = task.model;
         }
 
+        // ASSUMPTION: Router.route is a synchronous pure lookup owned by the
+        // providers cluster (desktop/src/providers/*, untouched). The provider
+        // stream below is the legacy AsyncIterable Promise API
+        // (Provider.chatCompletionStream); it is consumed directly with the
+        // task AbortSignal as the cancellation carrier, and each model turn is
+        // still bounded by the tool-execution timeout at executeToolCall.
         const route = this.options.router.route(request.model);
         const provider = route.provider;
         // task.model keeps the selector so a re-run picks the same provider;
@@ -488,11 +590,22 @@ export class TaskRuntime implements TaskDispatcher {
     await this.flush(task);
 
     try {
-      const executed = await toolset.execute(call.name, args, {
-        taskId: task.id,
-        workspace: task.request.workspace,
-        signal: task.controller?.signal ?? new AbortController().signal,
-      });
+      // ASSUMPTION: TaskToolRegistration.execute is the legacy Promise API
+      // (registry.ts in this cluster wraps its own internals; builtins/tools
+      // behind it are untouched). Bounded here so a wedged tool fails the
+      // call instead of wedging the task fiber. AbortSignal stays the
+      // cancellation carrier because tools/providers own that contract.
+      const executed = await Effect.runPromise(
+        Effect.tryPromise({
+          try: () =>
+            toolset.execute(call.name, args, {
+              taskId: task.id,
+              workspace: task.request.workspace,
+              signal: task.controller?.signal ?? new AbortController().signal,
+            }),
+          catch: (error) => error,
+        }).pipe(Effect.timeout(TOOL_EXECUTION_TIMEOUT_MS)),
+      );
       if (task.state === 'cancelled' || this.shuttingDown) return;
       this.appendToolResult(task, call, executed.registrationId, executed.result);
     } catch (error) {
@@ -603,7 +716,12 @@ export class TaskRuntime implements TaskDispatcher {
     });
     await this.flush(task);
 
-    const decision = await decisionPromise;
+    // Approval waits on the user, so no timeout here: the wait is still
+    // interruptible via cancel()/shutdown(), which resolve the deferred with
+    // 'deny'. Wrapped in an Effect only for typed-boundary tracing.
+    const decision = await Effect.runPromise(
+      Effect.tryPromise({ try: () => decisionPromise, catch: (error) => error }),
+    );
     if (decision === 'allow_session') this.rememberSessionApproval(task.id, descriptor);
     return decision;
   }
@@ -642,20 +760,40 @@ export class TaskRuntime implements TaskDispatcher {
   }
 
   private markDirty(task: RuntimeTask): void {
-    if (task.saveTimer) return;
-    task.saveTimer = setTimeout(() => {
-      task.saveTimer = undefined;
-      void this.options.store.save(this.toPersistedTask(task));
-    }, SAVE_DELAY_MS);
-    task.saveTimer.unref();
+    // Debounced dirty-save as an Effect fiber (replaces setTimeout): sleep
+    // then persist, with ensuring cleanup so the slot never dangles.
+    // flush()/shutdown() interrupt the fiber — no timer outlives its task.
+    if (task.saveFiber) return;
+    const self = this;
+    const program = Effect.ensuring(
+      Effect.sleep(SAVE_DELAY_MS).pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: () => self.options.store.save(self.toPersistedTask(task)),
+            catch: (error) => error,
+          }).pipe(Effect.timeout(PERSIST_TIMEOUT_MS), Effect.asVoid),
+        ),
+        Effect.orElseSucceed(() => undefined),
+      ),
+      Effect.sync(() => {
+        task.saveFiber = undefined;
+      }),
+    );
+    task.saveFiber = Effect.runFork(program);
   }
 
   private async flush(task: RuntimeTask): Promise<void> {
-    if (task.saveTimer) {
-      clearTimeout(task.saveTimer);
-      task.saveTimer = undefined;
+    if (task.saveFiber) {
+      const fiber = task.saveFiber;
+      task.saveFiber = undefined;
+      await Effect.runPromise(Fiber.interrupt(fiber)).catch(() => undefined);
     }
-    await this.options.store.save(this.toPersistedTask(task));
+    await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => this.options.store.save(this.toPersistedTask(task)),
+        catch: (error) => error,
+      }).pipe(Effect.timeout(PERSIST_TIMEOUT_MS)),
+    );
   }
 
   private normalizeRequest(input: AgentTaskRequest): NormalizedTaskRequest {

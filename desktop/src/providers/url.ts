@@ -9,7 +9,8 @@
  */
 
 import { isIPv4 } from 'node:net';
-import { ApiError, ErrorType } from './errors.js';
+import { Effect } from 'effect';
+import { ApiError, ErrorType, runSyncBoundary } from './errors.js';
 
 /** Mirrors Go's net.IP.IsLoopback, including IPv4-mapped IPv6 (::ffff:127.0.0.1). */
 export function isLoopbackHost(host: string): boolean {
@@ -46,19 +47,30 @@ export function adapterBaseUrl(storedUrl: string): string {
  * credentials or downgrade the transport. Throws an OpenAI-shaped ApiError.
  */
 export function assertProviderUrl(raw: string): URL {
-  let target: URL;
-  try {
-    target = new URL(raw.trim());
-  } catch {
-    throw new ApiError('invalid provider URL', ErrorType.InvalidRequest);
-  }
-  if (!target.hostname || target.username || target.password || target.hash) {
-    throw new ApiError('invalid provider URL', ErrorType.InvalidRequest);
-  }
-  if (target.protocol === 'https:') return target;
-  if (target.protocol === 'http:' && isLoopbackHost(target.hostname)) return target;
-  throw new ApiError(
-    'remote providers require HTTPS; HTTP is allowed only for localhost',
-    ErrorType.InvalidRequest,
-  );
+  return runSyncBoundary(assertProviderUrlEffect(raw));
+}
+
+/** Effect version so proxy/registry code can validate inside an Effect chain. */
+export function assertProviderUrlEffect(raw: string): Effect.Effect<URL, ApiError> {
+  return Effect.try({
+    try: () => {
+      let target: URL;
+      try {
+        target = new URL(raw.trim());
+      } catch {
+        throw new ApiError('invalid provider URL', ErrorType.InvalidRequest);
+      }
+      if (!target.hostname || target.username || target.password || target.hash) {
+        throw new ApiError('invalid provider URL', ErrorType.InvalidRequest);
+      }
+      if (target.protocol === 'https:') return target;
+      if (target.protocol === 'http:' && isLoopbackHost(target.hostname)) return target;
+      throw new ApiError(
+        'remote providers require HTTPS; HTTP is allowed only for localhost',
+        ErrorType.InvalidRequest,
+      );
+    },
+    catch: (err) =>
+      err instanceof ApiError ? err : new ApiError('invalid provider URL', ErrorType.InvalidRequest),
+  });
 }

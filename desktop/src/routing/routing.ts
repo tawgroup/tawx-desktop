@@ -11,6 +11,7 @@
  * SemanticMatcher via its options for future wiring or tests.
  */
 
+import { Cause, Data, Effect } from 'effect';
 import { ClassifierMatcher } from './classifier.js';
 import { HeuristicMatcher } from './heuristics.js';
 import { allowExplicit } from './config.js';
@@ -60,6 +61,30 @@ export interface RequestInfo {
   hasTools: boolean;
 }
 
+/**
+ * Typed failure of one cascade layer (`semantic` or `classifier`). Layer
+ * errors never reject `route` — they are recovered into `cascade` entries
+ * (`<layer>:error`) via `recoverLayer` — but they travel typed through the
+ * Effect chain instead of being swallowed by an empty `catch {}`, with the
+ * original error kept on `cause`.
+ */
+export class SemanticLayerError extends Data.TaggedError('SemanticLayerError')<{
+  readonly layer: 'semantic' | 'classifier';
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
+
+/** Typed configuration failure for `validateRoutesEffect` (message-compatible with the `Error` it replaces). */
+export class RoutingConfigError extends Data.TaggedError('RoutingConfigError')<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
+
+/** Typed capability-resolution failure (message-compatible with the `Error` it replaces). */
+export class CapabilityError extends Data.TaggedError('CapabilityError')<{
+  readonly message: string;
+}> {}
+
 /** A simplified message for routing decisions. */
 export interface MessageInfo {
   role: string;
@@ -90,185 +115,281 @@ export class SemanticRouter {
     private readonly classifier?: ClassifierMatcher,
   ) {}
 
-  /** Performs the routing cascade and returns a decision. */
-  async route(info: RequestInfo, signal?: AbortSignal): Promise<Decision> {
-    const start = Date.now();
-    const cascade: string[] = [];
+  /**
+   * Effect core of the routing cascade: heuristics → semantic → classifier →
+   * default. Infallible by design (`Effect<Decision, never>`) — layer failures
+   * are typed `SemanticLayerError`s recovered into `cascade` entries, never
+   * thrown, so every decision still carries the full audit trail.
+   */
+  routeEffect(info: RequestInfo, signal?: AbortSignal): Effect.Effect<Decision, never> {
+    const self = this;
+    return Effect.gen(function* () {
+      const start = Date.now();
+      const cascade: string[] = [];
 
-    // explicit model passthrough
-    if (info.model && allowExplicit(this.cfg)) {
-      return {
-        route: '',
-        model: info.model,
-        method: Method.Explicit,
-        confidence: 1.0,
-        latencyMs: Date.now() - start,
-        cascade: [`explicit:${info.model}`],
-      };
-    }
-
-    // layer 1: heuristics
-    if (this.heuristics) {
-      const route = this.heuristics.match(info);
-      if (route !== '') {
-        cascade.push(`heuristic:${route}`);
-        const rc = this.routeMap.get(route);
-        if (rc) {
-          return {
-            route,
-            model: rc.model,
-            method: Method.Heuristic,
-            confidence: 1.0,
-            latencyMs: Date.now() - start,
-            cascade,
-          };
-        }
-      } else {
-        cascade.push('heuristic:no_match');
-      }
-    }
-
-    // layer 2: embedding similarity
-    if (this.semantic) {
-      let matched: { route: string; confidence: number } | undefined;
-      try {
-        matched = await this.semantic.match(info, signal);
-      } catch {
-        cascade.push('semantic:error');
+      // explicit model passthrough
+      if (info.model && allowExplicit(self.cfg)) {
+        return {
+          route: '',
+          model: info.model,
+          method: Method.Explicit,
+          confidence: 1.0,
+          latencyMs: Date.now() - start,
+          cascade: [`explicit:${info.model}`],
+        };
       }
 
-      if (matched && matched.route !== '') {
-        const { route, confidence } = matched;
-        const threshold = this.cfg.semantic?.threshold ?? 0;
-        const ambiguous = this.cfg.semantic?.ambiguousThreshold ?? 0;
-
-        if (confidence >= threshold) {
-          cascade.push(`semantic:${route}:${confidence.toFixed(2)}`);
-          const rc = this.routeMap.get(route);
+      // layer 1: heuristics — a pure match lifted into the Effect chain so the
+      // whole cascade composes. A hit on an unknown route is impossible
+      // (validateRoutes rejects it at construction), so it records no_match.
+      const heuristics = self.heuristics;
+      if (heuristics) {
+        const route = yield* Effect.sync(() => heuristics.match(info));
+        if (route !== '') {
+          cascade.push(`heuristic:${route}`);
+          const rc = self.routeMap.get(route);
           if (rc) {
             return {
               route,
               model: rc.model,
-              method: Method.Semantic,
-              confidence,
+              method: Method.Heuristic,
+              confidence: 1.0,
               latencyMs: Date.now() - start,
               cascade,
             };
           }
+        } else {
+          cascade.push('heuristic:no_match');
         }
+      }
 
-        // ambiguous: escalate to classifier if available
-        if (confidence >= ambiguous && this.classifier) {
-          cascade.push(`semantic:${route}:${confidence.toFixed(2)}:ambiguous`);
-          let classified: { route: string; confidence: number } | undefined;
-          try {
-            classified = await this.classifier.classify(info, signal);
-          } catch {
-            cascade.push('classifier:error');
-          }
+      // layer 2: embedding similarity, with typed-error recovery into cascade
+      const semantic = self.semantic;
+      const classifier = self.classifier;
+      if (semantic) {
+        const matched = yield* self.recoverLayer(
+          self.matchSemanticEffect(semantic, info, signal),
+          cascade,
+        );
 
-          if (classified) {
-            const confidenceThreshold = this.cfg.classifier?.confidenceThreshold ?? 0;
-            if (classified.route !== '' && classified.confidence >= confidenceThreshold) {
-              cascade.push(`classifier:${classified.route}:${classified.confidence.toFixed(2)}`);
-              const rc = this.routeMap.get(classified.route);
-              if (rc) {
-                return {
-                  route: classified.route,
-                  model: rc.model,
-                  method: Method.Classifier,
-                  confidence: classified.confidence,
-                  latencyMs: Date.now() - start,
-                  cascade,
-                };
-              }
-            } else if (classified.route !== '') {
-              // record the candidate the classifier declined on, for tuning.
-              cascade.push(`classifier:${classified.route}:${classified.confidence.toFixed(2)}:no_match`);
-            } else {
-              cascade.push('classifier:no_match');
+        if (matched && matched.route !== '') {
+          const { route, confidence } = matched;
+          const threshold = self.cfg.semantic?.threshold ?? 0;
+          const ambiguous = self.cfg.semantic?.ambiguousThreshold ?? 0;
+
+          if (confidence >= threshold) {
+            cascade.push(`semantic:${route}:${confidence.toFixed(2)}`);
+            const rc = self.routeMap.get(route);
+            if (rc) {
+              return {
+                route,
+                model: rc.model,
+                method: Method.Semantic,
+                confidence,
+                latencyMs: Date.now() - start,
+                cascade,
+              };
             }
           }
-        } else {
-          // below the ambiguous window (or no classifier): keep the
-          // candidate and score that caused the decline.
-          cascade.push(`semantic:${route}:${confidence.toFixed(2)}:no_match`);
-        }
-      } else if (matched) {
-        cascade.push('semantic:no_match');
-      }
-    } else if (this.classifier) {
-      // no embeddings configured, try classifier directly
-      let classified: { route: string; confidence: number } | undefined;
-      try {
-        classified = await this.classifier.classify(info, signal);
-      } catch {
-        cascade.push('classifier:error');
-      }
 
-      if (classified) {
-        const confidenceThreshold = this.cfg.classifier?.confidenceThreshold ?? 0;
-        if (classified.route !== '' && classified.confidence >= confidenceThreshold) {
-          cascade.push(`classifier:${classified.route}:${classified.confidence.toFixed(2)}`);
-          const rc = this.routeMap.get(classified.route);
-          if (rc) {
-            return {
-              route: classified.route,
-              model: rc.model,
-              method: Method.Classifier,
-              confidence: classified.confidence,
-              latencyMs: Date.now() - start,
+          // ambiguous: escalate to classifier if available
+          if (confidence >= ambiguous && classifier) {
+            cascade.push(`semantic:${route}:${confidence.toFixed(2)}:ambiguous`);
+            const classified = yield* self.recoverLayer(
+              self.classifyLayerEffect(classifier, info, signal),
               cascade,
-            };
+            );
+            const decision = self.applyClassifierResult(classified, cascade, start);
+            if (decision) return decision;
+          } else {
+            // below the ambiguous window (or no classifier): keep the
+            // candidate and score that caused the decline.
+            cascade.push(`semantic:${route}:${confidence.toFixed(2)}:no_match`);
           }
-        } else if (classified.route !== '') {
-          // record the candidate the classifier declined on, for tuning.
-          cascade.push(`classifier:${classified.route}:${classified.confidence.toFixed(2)}:no_match`);
-        } else {
-          cascade.push('classifier:no_match');
+        } else if (matched) {
+          cascade.push('semantic:no_match');
+        }
+      } else if (classifier) {
+        // no embeddings configured, try classifier directly
+        const classified = yield* self.recoverLayer(
+          self.classifyLayerEffect(classifier, info, signal),
+          cascade,
+        );
+        const decision = self.applyClassifierResult(classified, cascade, start);
+        if (decision) return decision;
+      }
+
+      // default route
+      if (self.cfg.defaultRoute) {
+        const rc = self.routeMap.get(self.cfg.defaultRoute);
+        if (rc) {
+          cascade.push(`default:${self.cfg.defaultRoute}`);
+          return {
+            route: self.cfg.defaultRoute,
+            model: rc.model,
+            method: Method.Default,
+            confidence: 0,
+            latencyMs: Date.now() - start,
+            cascade,
+          };
         }
       }
-    }
 
-    // default route
-    if (this.cfg.defaultRoute) {
-      const rc = this.routeMap.get(this.cfg.defaultRoute);
-      if (rc) {
-        cascade.push(`default:${this.cfg.defaultRoute}`);
+      // absolute fallback: use first route
+      const first = self.cfg.routes[0];
+      if (first) {
+        cascade.push(`default:${first.name}`);
         return {
-          route: this.cfg.defaultRoute,
-          model: rc.model,
+          route: first.name,
+          model: first.model,
           method: Method.Default,
           confidence: 0,
           latencyMs: Date.now() - start,
           cascade,
         };
       }
-    }
 
-    // absolute fallback: use first route
-    const first = this.cfg.routes[0];
-    if (first) {
-      cascade.push(`default:${first.name}`);
+      cascade.push('default');
       return {
-        route: first.name,
-        model: first.model,
+        route: '',
+        model: '',
         method: Method.Default,
         confidence: 0,
         latencyMs: Date.now() - start,
         cascade,
       };
-    }
+    });
+  }
 
-    cascade.push('default');
-    return {
-      route: '',
-      model: '',
-      method: Method.Default,
-      confidence: 0,
-      latencyMs: Date.now() - start,
-      cascade,
-    };
+  /**
+   * Promise compatibility boundary: same signature as before — main.ts awaits
+   * this. Layer errors are already recovered into `cascade` inside
+   * `routeEffect`, so this only ever rejects on unexpected defects, surfaced
+   * raw (no `FiberFailure` wrapper).
+   */
+  async route(info: RequestInfo, signal?: AbortSignal): Promise<Decision> {
+    const exit = await Effect.runPromiseExit(this.routeEffect(info, signal));
+    if (exit._tag === 'Failure') throw Cause.squash(exit.cause);
+    return exit.value;
+  }
+
+  /**
+   * Recovers a layer attempt into the cascade log. The typed error writes its
+   * `<layer>:error` entry via `tapError` (auditable, never silently dropped)
+   * and `orElse` continues the cascade with `undefined` — the Effect spelling
+   * of the old `try/catch → push → fall through`, minus the empty `catch {}`.
+   */
+  private recoverLayer<T>(
+    attempt: Effect.Effect<T, SemanticLayerError>,
+    cascade: string[],
+  ): Effect.Effect<T | undefined, never> {
+    return attempt.pipe(
+      Effect.tapError((error) =>
+        Effect.sync(() => {
+          cascade.push(`${error.layer}:error`);
+        }),
+      ),
+      Effect.orElse(() => Effect.succeed(undefined)),
+    );
+  }
+
+  /** Runs the embedding-similarity matcher; rejections become typed layer errors. */
+  private matchSemanticEffect(
+    matcher: SemanticMatcher,
+    info: RequestInfo,
+    signal: AbortSignal | undefined,
+  ): Effect.Effect<{ route: string; confidence: number }, SemanticLayerError> {
+    return Effect.tryPromise({
+      try: () => matcher.match(info, signal),
+      catch: (cause) =>
+        new SemanticLayerError({
+          layer: 'semantic',
+          message: `semantic layer failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          cause,
+        }),
+    });
+  }
+
+  /** Runs the LLM classifier; its typed `ClassifierError` is adapted to the cascade's layer error. */
+  private classifyLayerEffect(
+    matcher: ClassifierMatcher,
+    info: RequestInfo,
+    signal: AbortSignal | undefined,
+  ): Effect.Effect<{ route: string; confidence: number }, SemanticLayerError> {
+    return matcher.classifyEffect(info, signal).pipe(
+      Effect.mapError(
+        (cause): SemanticLayerError =>
+          new SemanticLayerError({ layer: 'classifier', message: cause.message, cause }),
+      ),
+    );
+  }
+
+  /**
+   * Applies a (possibly recovered-absent) classifier result: accepts it when
+   * it clears the confidence threshold, otherwise records the declined
+   * candidate for tuning. Returns a decision on accept, `undefined` to fall
+   * through to the default route.
+   */
+  private applyClassifierResult(
+    classified: { route: string; confidence: number } | undefined,
+    cascade: string[],
+    start: number,
+  ): Decision | undefined {
+    if (!classified) return undefined;
+    const confidenceThreshold = this.cfg.classifier?.confidenceThreshold ?? 0;
+    if (classified.route !== '' && classified.confidence >= confidenceThreshold) {
+      cascade.push(`classifier:${classified.route}:${classified.confidence.toFixed(2)}`);
+      const rc = this.routeMap.get(classified.route);
+      if (rc) {
+        return {
+          route: classified.route,
+          model: rc.model,
+          method: Method.Classifier,
+          confidence: classified.confidence,
+          latencyMs: Date.now() - start,
+          cascade,
+        };
+      }
+      return undefined;
+    }
+    if (classified.route !== '') {
+      // record the candidate the classifier declined on, for tuning.
+      cascade.push(`classifier:${classified.route}:${classified.confidence.toFixed(2)}:no_match`);
+    } else {
+      cascade.push('classifier:no_match');
+    }
+    return undefined;
+  }
+
+  /**
+   * Effect core of capability resolution: fails with a typed
+   * `CapabilityError` instead of throwing.
+   */
+  resolveCapabilityEffect(vocabulary: string, cls: string): Effect.Effect<Decision, CapabilityError> {
+    if (vocabulary !== capabilityVocabularyV1) {
+      return Effect.fail(
+        new CapabilityError({ message: `unsupported capability vocabulary '${vocabulary}'` }),
+      );
+    }
+    if (cls !== capabilityFrontierCoding) {
+      return Effect.fail(
+        new CapabilityError({
+          message: `unknown capability class '${cls}' in vocabulary '${vocabulary}'`,
+        }),
+      );
+    }
+    const route = this.routeMap.get(cls);
+    if (!route) {
+      return Effect.fail(new CapabilityError({ message: `unknown capability class '${cls}'` }));
+    }
+    return Effect.succeed({
+      route: cls,
+      model: route.model,
+      method: Method.Capability,
+      confidence: 1,
+      latencyMs: 0,
+      cascade: [`capability:${cls}`],
+    });
   }
 
   /**
@@ -276,26 +397,37 @@ export class SemanticRouter {
    * request-routing cascade. Capability classes name gateway-owned routes, so
    * the result is deterministic for the gateway configuration at the time of
    * resolution.
+   *
+   * Sync compatibility boundary: same signature and `Error` throw as before.
    */
   resolveCapability(vocabulary: string, cls: string): Decision {
-    if (vocabulary !== capabilityVocabularyV1) {
-      throw new Error(`unsupported capability vocabulary '${vocabulary}'`);
+    const exit = Effect.runSyncExit(
+      this.resolveCapabilityEffect(vocabulary, cls).pipe(
+        Effect.mapError((error) => new Error(error.message)),
+      ),
+    );
+    if (exit._tag === 'Failure') throw Cause.squash(exit.cause);
+    return exit.value;
+  }
+
+  /**
+   * Effect core of capability-alias parsing: malformed aliases fail typed,
+   * then resolution delegates to `resolveCapabilityEffect`.
+   */
+  resolveCapabilityModelEffect(model: string): Effect.Effect<Decision, CapabilityError> {
+    if (!model.startsWith(capabilityModelPrefix)) {
+      return Effect.fail(
+        new CapabilityError({ message: `model '${model}' is not a capability alias` }),
+      );
     }
-    if (cls !== capabilityFrontierCoding) {
-      throw new Error(`unknown capability class '${cls}' in vocabulary '${vocabulary}'`);
+    const value = model.slice(capabilityModelPrefix.length);
+    const parts = value.split('/');
+    if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
+      return Effect.fail(
+        new CapabilityError({ message: `malformed capability model '${model}'` }),
+      );
     }
-    const route = this.routeMap.get(cls);
-    if (!route) {
-      throw new Error(`unknown capability class '${cls}'`);
-    }
-    return {
-      route: cls,
-      model: route.model,
-      method: Method.Capability,
-      confidence: 1,
-      latencyMs: 0,
-      cascade: [`capability:${cls}`],
-    };
+    return this.resolveCapabilityEffect(`${parts[0]}/${parts[1]}`, parts[2]);
   }
 
   /**
@@ -304,17 +436,17 @@ export class SemanticRouter {
    * signed vocabulary grammar is exactly <segment>/v<N>, so the complete
    * alias has three slash-separated parts; changing that grammar requires
    * coordinated changes to Sterling's builder and this parser.
+   *
+   * Sync compatibility boundary: same signature and `Error` throw as before.
    */
   resolveCapabilityModel(model: string): Decision {
-    if (!model.startsWith(capabilityModelPrefix)) {
-      throw new Error(`model '${model}' is not a capability alias`);
-    }
-    const value = model.slice(capabilityModelPrefix.length);
-    const parts = value.split('/');
-    if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
-      throw new Error(`malformed capability model '${model}'`);
-    }
-    return this.resolveCapability(`${parts[0]}/${parts[1]}`, parts[2]);
+    const exit = Effect.runSyncExit(
+      this.resolveCapabilityModelEffect(model).pipe(
+        Effect.mapError((error) => new Error(error.message)),
+      ),
+    );
+    if (exit._tag === 'Failure') throw Cause.squash(exit.cause);
+    return exit.value;
   }
 }
 
@@ -333,6 +465,21 @@ export function allowsExplicitModel(sr: SemanticRouter | undefined): boolean {
   return sr !== undefined && allowExplicit(sr.cfg);
 }
 
+/**
+ * Effect core of route-set validation: each misconfiguration fails with a
+ * typed `RoutingConfigError` (message-identical to the `Error` it replaces),
+ * so construction-time failures are matchable instead of opaque throws.
+ */
+function validateRoutesEffect(cfg: RoutingConfig): Effect.Effect<Map<string, RouteConfig>, RoutingConfigError> {
+  return Effect.try({
+    try: () => validateRoutes(cfg),
+    catch: (cause) =>
+      new RoutingConfigError({
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause,
+      }),
+  });
+}
 /**
  * Checks the route set and its references at construction time and returns
  * the name -> route lookup. Each failure here is a misconfiguration that
@@ -401,12 +548,20 @@ export interface CreateSemanticRouterOptions {
  * Creates a SemanticRouter, validating the route set and wiring the
  * heuristic and classifier layers. Collapses Go's NewSemanticRouter and
  * NewSemanticRouterWithClassifier into one options bag.
+ *
+ * Validation runs through `validateRoutesEffect`; the typed failure is mapped
+ * back to a plain `Error` at this boundary, so misconfiguration still throws
+ * with the exact same messages as before.
  */
 export function createSemanticRouter(
   cfg: RoutingConfig,
   options: CreateSemanticRouterOptions = {},
 ): SemanticRouter {
-  const routeMap = validateRoutes(cfg);
+  const exit = Effect.runSyncExit(
+    validateRoutesEffect(cfg).pipe(Effect.mapError((error) => new Error(error.message))),
+  );
+  if (exit._tag === 'Failure') throw Cause.squash(exit.cause);
+  const routeMap = exit.value;
 
   // layer 1: heuristics
   const heuristics = cfg.heuristics?.enabled ? new HeuristicMatcher(cfg.heuristics.rules) : undefined;

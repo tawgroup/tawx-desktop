@@ -1,3 +1,4 @@
+import { Effect } from 'effect';
 import type {
   AgentCapabilityRegistration,
   TaskRegistrationContext,
@@ -8,6 +9,12 @@ import type {
   ToolUndoResult,
 } from './types.js';
 import type { Tool } from '../providers/types.js';
+
+// Bounds for capability factories and tool calls at this boundary. The
+// factories themselves (builtins/tools/integrations) keep their Promise
+// signatures — untouched clusters — and are only wrapped + timed here.
+const CAPABILITY_CREATE_TIMEOUT_MS = 30_000;
+const TOOL_CALL_TIMEOUT_MS = 120_000;
 
 interface RegisteredTool {
   owner: AgentCapabilityRegistration;
@@ -46,7 +53,15 @@ export class CapabilityRegistry {
     const instances = new Map<string, TaskToolRegistration>();
 
     for (const owner of this.registrations.values()) {
-      const registration = await owner.create({ ...context, recoveryState: recoveryStates[owner.id] });
+      // Legacy Promise factory (builtins/integrations clusters own it — it may
+      // even return synchronously); wrapped with a timeout so a wedged
+      // factory fails toolset creation instead of hanging the task fiber.
+      const registration = await Effect.runPromise(
+        Effect.tryPromise({
+          try: () => Promise.resolve().then(() => owner.create({ ...context, recoveryState: recoveryStates[owner.id] })),
+          catch: (error) => error,
+        }).pipe(Effect.timeout(CAPABILITY_CREATE_TIMEOUT_MS)),
+      );
       instances.set(owner.id, registration);
       for (const definition of registration.definitions) {
         const name = definition.function?.name;
@@ -84,7 +99,14 @@ export class TaskToolset {
     }
     return {
       registrationId: tool.owner.id,
-      result: await tool.registration.execute(name, args, context),
+      // Timeout failures propagate to the caller's catch (executeToolCall),
+      // which records them as tool errors — same path as a throwing tool.
+      result: await Effect.runPromise(
+        Effect.tryPromise({
+          try: () => tool.registration.execute(name, args, context),
+          catch: (error) => error,
+        }).pipe(Effect.timeout(TOOL_CALL_TIMEOUT_MS)),
+      ),
     };
   }
 
@@ -95,7 +117,12 @@ export class TaskToolset {
   ): Promise<ToolUndoResult | void> {
     const registration = this.registrations.get(registrationId);
     if (!registration?.undo) throw new Error(`capability '${registrationId}' cannot undo changes`);
-    return registration.undo(checkpointId, context);
+    return Effect.runPromise(
+      Effect.tryPromise({
+        try: () => registration.undo!(checkpointId, context),
+        catch: (error) => error,
+      }).pipe(Effect.timeout(TOOL_CALL_TIMEOUT_MS)),
+    );
   }
 
   exportStates(): Record<string, unknown> {
@@ -107,6 +134,18 @@ export class TaskToolset {
   }
 
   async dispose(): Promise<void> {
-    await Promise.all([...this.registrations.values()].map((registration) => registration.dispose?.()));
+    // Structured fan-out mirroring Promise.all: unbounded concurrency, first
+    // failure surfaces while siblings are interrupted — no dangling dispose.
+    await Effect.runPromise(
+      Effect.forEach(
+        [...this.registrations.values()],
+        (registration) =>
+          Effect.tryPromise({
+            try: () => Promise.resolve().then(() => registration.dispose?.()),
+            catch: (error) => error,
+          }).pipe(Effect.asVoid),
+        { concurrency: 'unbounded', discard: true },
+      ),
+    );
   }
 }

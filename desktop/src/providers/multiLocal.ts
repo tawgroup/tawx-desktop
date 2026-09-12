@@ -6,7 +6,8 @@
  * threaded event loop makes that unnecessary, so the locking is simply gone.
  */
 
-import { ApiError, ErrorType, asApiError } from './errors.js';
+import { Effect } from 'effect';
+import { ApiError, ErrorType, asApiError, runPromiseBoundary } from './errors.js';
 import { LocalProvider } from './local.js';
 import type { Provider } from './provider.js';
 import type { ChatCompletionRequest, ChatCompletionResponse, Model, StreamChunk } from './types.js';
@@ -249,19 +250,24 @@ export class MultiLocalProvider implements Provider {
   }
 
   private async probe(endpoint: Endpoint, path: string): Promise<boolean> {
-    const controller = new AbortController();
-    const timer = this.timeout > 0 ? setTimeout(() => controller.abort(), this.timeout) : undefined;
-    timer?.unref();
-
+    // Health probe as an interruptible Effect: Effect.timeout bounds it (the
+    // old setTimeout+abort controller), and the Effect runtime's AbortSignal
+    // aborts the fetch on interrupt.
+    const program = Effect.tryPromise({
+      try: (abortSignal) => endpoint.fetchImpl(endpoint.baseUrl + path, { signal: abortSignal }),
+      catch: () => new ApiError('probe failed', ErrorType.Server),
+    }).pipe(
+      Effect.timeout(this.timeout > 0 ? this.timeout : '30 seconds'),
+      Effect.catchAll(() => Effect.succeed(undefined as Response | undefined)),
+    );
+    const res = await runPromiseBoundary(program);
+    if (!res) return false;
     try {
-      const res = await endpoint.fetchImpl(endpoint.baseUrl + path, { signal: controller.signal });
       // the body must be drained or the socket is held open
       await res.arrayBuffer().catch(() => undefined);
       return res.status === 200;
     } catch {
       return false;
-    } finally {
-      if (timer) clearTimeout(timer);
     }
   }
 

@@ -25,7 +25,8 @@
 
 import { connect as http2Connect, type ClientHttp2Session } from 'node:http2';
 import { createHash, randomUUID } from 'node:crypto';
-import { ApiError, ErrorType } from './errors.js';
+import { Effect, Schedule } from 'effect';
+import { ApiError, ErrorType, runPromiseBoundary } from './errors.js';
 import type { Provider } from './provider.js';
 import {
   FLAG_END_STREAM,
@@ -64,6 +65,28 @@ const RUN_PATH = '/agent.v1.AgentService/Run';
 const MODELS_PATH = '/agent.v1.AgentService/GetUsableModels';
 
 const DEFAULT_SYSTEM_PROMPT = 'You are a helpful assistant.';
+
+const UNARY_TIMEOUT = '30 seconds' as const;
+const unaryRetrySchedule = Schedule.intersect(Schedule.exponential('200 millis'), Schedule.recurs(2));
+
+function isAbortLike(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
+}
+
+/** Only transport failures are replayed; ApiError statuses and aborts are final. */
+function isRetryableUnaryError(err: unknown): boolean {
+  if (err instanceof ApiError) return false;
+  if (isAbortLike(err)) return false;
+  if ((err as { _tag?: string })?._tag === 'TimeoutException') return false;
+  return true;
+}
+
+function mapUnaryTimeout(err: unknown): unknown {
+  if ((err as { _tag?: string })?._tag === 'TimeoutException') {
+    return new ApiError('cursor: request timed out', ErrorType.Server);
+  }
+  return err;
+}
 
 export interface CursorOptions {
   /** The OAuth access token, not an API key. `omp token cursor` prints one. */
@@ -215,29 +238,49 @@ export class CursorProvider implements Provider {
   }
 
   private async unary(path: string, body: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
-    const session = this.connectImpl(this.baseUrl);
-    try {
-      return await new Promise<Uint8Array>((resolve, reject) => {
-        const request = session.request(this.headers(path, 'application/proto'));
-        const parts: Buffer[] = [];
-        const abort = () => request.destroy(new Error('aborted'));
-        signal?.addEventListener('abort', abort, { once: true });
-        session.on('error', reject);
-        request.on('error', reject);
-        request.on('response', (headers) => {
-          const status = Number(headers[':status'] ?? 0);
-          if (status !== 200) reject(statusError(status));
-        });
-        request.on('data', (part: Buffer) => parts.push(part));
-        request.on('end', () => {
-          signal?.removeEventListener('abort', abort);
-          resolve(new Uint8Array(Buffer.concat(parts)));
-        });
-        request.end(Buffer.from(body));
+    // The whole exchange — connect, request, listeners — is set up atomically
+    // inside one Effect.async registration, so nothing can emit between setup
+    // steps. The Effect runtime's AbortSignal joins the caller's (abort via
+    // Effect interrupt), Effect.timeout bounds the call, Effect.retry replays
+    // transport failures only, and interruption/settlement closes the session
+    // via the async cleanup (Effect scope release).
+    const attempt: Effect.Effect<Uint8Array, unknown> = Effect.async<Uint8Array, unknown>((resume, effectSignal) => {
+      let session: ClientHttp2Session;
+      try {
+        session = this.connectImpl(this.baseUrl);
+      } catch (err) {
+        resume(Effect.fail(err));
+        return;
+      }
+      const request = session.request(this.headers(path, 'application/proto'));
+      const parts: Buffer[] = [];
+      let settled = false;
+      const onOuterAbort = () => request.destroy(new Error('aborted'));
+      const onEffectAbort = () => request.destroy(new Error('aborted'));
+      const settle = (effect: Effect.Effect<Uint8Array, unknown>) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onOuterAbort);
+        effectSignal.removeEventListener('abort', onEffectAbort);
+        session.close();
+        resume(effect);
+      };
+      signal?.addEventListener('abort', onOuterAbort, { once: true });
+      effectSignal.addEventListener('abort', onEffectAbort, { once: true });
+      session.on('error', (err) => settle(Effect.fail(err)));
+      request.on('error', (err) => settle(Effect.fail(err)));
+      request.on('response', (headers) => {
+        const status = Number(headers[':status'] ?? 0);
+        if (status !== 200) settle(Effect.fail(statusError(status)));
       });
-    } finally {
-      session.close();
-    }
+      request.on('data', (part: Buffer) => parts.push(part));
+      request.on('end', () => settle(Effect.succeed(new Uint8Array(Buffer.concat(parts)))));
+      request.end(Buffer.from(body));
+    }).pipe(
+      Effect.timeout(UNARY_TIMEOUT),
+      Effect.catchAll((err) => Effect.fail(mapUnaryTimeout(err))),
+    );
+    return runPromiseBoundary(Effect.retry(attempt, { schedule: unaryRetrySchedule, while: isRetryableUnaryError }));
   }
 
   /**
@@ -323,9 +366,17 @@ export class CursorProvider implements Provider {
         });
       }
     } finally {
-      signal?.removeEventListener('abort', abort);
-      request.destroy();
-      session.close();
+      // Teardown as an Effect scope release: the abort listener is removed and
+      // the http2 request/session are torn down together, even on interrupt.
+      Effect.runSync(
+        Effect.ensuring(
+          Effect.sync(() => {
+            request.destroy();
+            session.close();
+          }),
+          Effect.sync(() => signal?.removeEventListener('abort', abort)),
+        ),
+      );
     }
   }
 

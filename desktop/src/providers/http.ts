@@ -6,7 +6,8 @@
  * string replaces it. There is no way to read a key back out.
  */
 
-import { ApiError, ErrorType, asApiError, statusCodeForError, writeError } from './errors.js';
+import { Effect } from 'effect';
+import { ApiError, ErrorType, asApiError, runPromiseBoundary, statusCodeForError, writeError } from './errors.js';
 import type { ProviderInput, ProviderPatch, ProviderRuntime } from './registry.js';
 import type { DesktopHttpHandler } from '../agent/types.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -49,10 +50,29 @@ async function route(
     if (method !== 'POST') return methodNotAllowed(res, method, path);
     const id = decodeId(testMatch[1]);
     // The probe reaches an upstream; a client that gives up must not leave it
-    // running.
-    const aborter = new AbortController();
-    res.on('close', () => aborter.abort());
-    return sendJson(res, 200, { provider: await runtime.test(id, aborter.signal) });
+    // running. The abort wiring lives in an Effect scope: acquire registers
+    // res.on('close'), release removes it, and the probe itself runs as an
+    // interruptible Effect bounded by Effect.timeout.
+    const provider = await runPromiseBoundary(
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const aborter = new AbortController();
+          const onClose = () => aborter.abort();
+          res.on('close', onClose);
+          return { aborter, onClose };
+        }),
+        ({ aborter }) =>
+          Effect.tryPromise({
+            try: () => runtime.test(id, aborter.signal),
+            catch: (err) => asApiError(err),
+          }).pipe(
+            Effect.timeout('30 seconds'),
+            Effect.catchAll((err) => Effect.fail(asApiError(err))),
+          ),
+        ({ onClose }) => Effect.sync(() => res.removeListener('close', onClose)),
+      ),
+    );
+    return sendJson(res, 200, { provider });
   }
 
   const idMatch = /^\/desktop\/providers\/([^/]+)$/.exec(path);

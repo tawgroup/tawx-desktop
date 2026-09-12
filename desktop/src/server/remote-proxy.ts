@@ -10,7 +10,8 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { ApiError, ErrorType, writeError } from '../providers/errors.js';
+import { Effect, Schedule } from 'effect';
+import { ApiError, ErrorType, runPromiseBoundary, writeError } from '../providers/errors.js';
 import { assertProviderUrl, isLoopbackHost } from '../providers/url.js';
 
 const MAX_REQUEST_BYTES = 4 << 20;
@@ -108,22 +109,60 @@ export async function handleRemoteProvider(
   if (typeof authorization === 'string') headers.set('Authorization', authorization);
 
   // A client that navigates away or hits stop must not leave the upstream
-  // streaming into a closed socket.
-  const aborter = new AbortController();
-  res.on('close', () => aborter.abort());
-  const signal = AbortSignal.any([aborter.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
+  // streaming into a closed socket. The abort wiring lives in an Effect scope
+  // (acquire registers res.on('close'), release removes it); the upstream
+  // fetch itself runs as an interruptible Effect bounded by Effect.timeout and
+  // replayed by Effect.retry on transport failures only, so ApiError rejections
+  // (too many redirects) stay single-shot and keep their 400 mapping below.
+  const upstreamRetry = Schedule.intersect(Schedule.exponential('200 millis'), Schedule.recurs(2));
+  const isRetryableUpstream = (err: unknown): boolean => {
+    if (err instanceof ApiError) return false;
+    if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) return false;
+    if ((err as { _tag?: string })?._tag === 'TimeoutException') return true;
+    return err instanceof TypeError;
+  };
 
   let response: Response;
   try {
-    response = await fetchFollowing(target, {
-      method: req.method ?? 'GET',
-      headers,
-      body,
-      signal,
-      redirect: 'manual',
-    });
+    response = await runPromiseBoundary(
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const aborter = new AbortController();
+          const onClose = () => aborter.abort();
+          res.on('close', onClose);
+          return { aborter, onClose };
+        }),
+        ({ aborter }) =>
+          Effect.retry(
+            Effect.tryPromise({
+              try: (effectSignal) =>
+                fetchFollowing(target, {
+                  method: req.method ?? 'GET',
+                  headers,
+                  body,
+                  signal: AbortSignal.any([
+                    aborter.signal,
+                    AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+                    effectSignal,
+                  ]),
+                  redirect: 'manual',
+                }),
+              // Keep the error channel unknown: ApiError stays ApiError (400
+              // below), transport failures stay raw (502 below).
+              catch: (err) => err,
+            }).pipe(
+              Effect.timeout(`${REQUEST_TIMEOUT_MS} millis` as const),
+              Effect.catchAll((err) => Effect.fail(err)),
+            ),
+            { schedule: upstreamRetry, while: isRetryableUpstream },
+          ),
+        ({ onClose }) => Effect.sync(() => res.removeListener('close', onClose)),
+      ),
+    );
   } catch (err) {
-    if (res.writableEnded || aborter.signal.aborted) return;
+    // The Effect scope already released the abort wiring; if the response is
+    // over or the socket is gone there is nothing left to answer.
+    if (res.writableEnded || res.destroyed) return;
     const apiErr =
       err instanceof ApiError ? err : new ApiError('provider connection failed', ErrorType.Server);
     return writeError(res, apiErr, err instanceof ApiError ? 400 : 502);

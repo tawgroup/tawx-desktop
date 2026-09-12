@@ -1,8 +1,15 @@
+import { Effect } from 'effect';
 import type { DesktopIntegrationRuntime } from '../integrations/index.js';
 import { CORE_TOOL_DEFINITIONS, CORE_TOOL_NAMES, createCoreToolRegistration } from '../tools/tools.js';
 import type { SerializedToolCheckpoint } from '../tools/tools.js';
 import { Workspace } from '../tools/workspace.js';
 import type { AgentCapabilityRegistration, ToolCapability } from './types.js';
+
+// Boundary timeouts for the tools/integrations Promise APIs, which live in
+// untouched clusters (desktop/src/tools/*, desktop/src/integrations/*).
+// Wrapped here — never reimplemented — so a wedged tool fails the call.
+const WORKSPACE_SELECT_TIMEOUT_MS = 15_000;
+const INTEGRATION_TIMEOUT_MS = 120_000;
 
 const CORE_CAPABILITIES: ToolCapability[] = CORE_TOOL_DEFINITIONS.flatMap((definition) => {
   const name = definition.function?.name;
@@ -17,7 +24,14 @@ export function coreToolCapabilities(): AgentCapabilityRegistration {
     capabilities: CORE_CAPABILITIES,
     create: async (context) => {
       const workspace = new Workspace();
-      if (context.workspace) await workspace.select(context.workspace.path);
+      if (context.workspace) {
+        await Effect.runPromise(
+          Effect.tryPromise({
+            try: () => workspace.select(context.workspace!.path),
+            catch: (error) => error,
+          }).pipe(Effect.timeout(WORKSPACE_SELECT_TIMEOUT_MS)),
+        );
+      }
       const enabledTools = expandCoreToolNames(context.enabledTools);
       const registration = createCoreToolRegistration({
         workspace,
@@ -36,7 +50,12 @@ export function coreToolCapabilities(): AgentCapabilityRegistration {
           return name !== undefined && enabledTools.has(name);
         }),
         execute: async (name, args, execution) => {
-          const result = await registration.execute(name, args, { signal: execution.signal });
+          const result = await Effect.runPromise(
+            Effect.tryPromise({
+              try: () => registration.execute(name, args, { signal: execution.signal }),
+              catch: (error) => error,
+            }).pipe(Effect.timeout(INTEGRATION_TIMEOUT_MS)),
+          );
           return {
             ok: true,
             output: result.content,
@@ -45,7 +64,12 @@ export function coreToolCapabilities(): AgentCapabilityRegistration {
           };
         },
         undo: async (checkpointId, execution) => {
-          const result = await registration.undo(checkpointId, { signal: execution.signal });
+          const result = await Effect.runPromise(
+            Effect.tryPromise({
+              try: () => registration.undo(checkpointId, { signal: execution.signal }),
+              catch: (error) => error,
+            }).pipe(Effect.timeout(INTEGRATION_TIMEOUT_MS)),
+          );
           return { ok: true, output: result.content, diff: result.diff };
         },
         exportState: () => registration.exportCheckpoints(),
@@ -70,19 +94,30 @@ export function integrationCapabilities(runtime: DesktopIntegrationRuntime): Age
     capabilities: INTEGRATION_CAPABILITIES,
     create: async (context) => {
       const enabledTools = normalizeIntegrationToolNames(context.enabledTools);
-      const definitions = await runtime.capabilities.definitions(enabledTools, context.workspace?.path);
+      const definitions = await Effect.runPromise(
+        Effect.tryPromise({
+          try: () => runtime.capabilities.definitions(enabledTools, context.workspace?.path),
+          catch: (error) => error,
+        }).pipe(Effect.timeout(WORKSPACE_SELECT_TIMEOUT_MS)),
+      );
       return {
         definitions,
         execute: async (name, args, execution) => {
-          const output = await runtime.capabilities.invoke(name, args, {
-            taskId: context.taskId,
-            workspace: context.workspace?.path ?? '',
-            policy: context.policy,
-            enabledTools,
-            signal: execution.signal,
-            requestApproval: (descriptor) => context.requestApproval(descriptor),
-            audit: (event) => context.audit('context', { type: 'audit', source: 'integration', ...event }),
-          });
+          const output = await Effect.runPromise(
+            Effect.tryPromise({
+              try: () =>
+                runtime.capabilities.invoke(name, args, {
+                  taskId: context.taskId,
+                  workspace: context.workspace?.path ?? '',
+                  policy: context.policy,
+                  enabledTools,
+                  signal: execution.signal,
+                  requestApproval: (descriptor) => context.requestApproval(descriptor),
+                  audit: (event) => context.audit('context', { type: 'audit', source: 'integration', ...event }),
+                }),
+              catch: (error) => error,
+            }).pipe(Effect.timeout(INTEGRATION_TIMEOUT_MS)),
+          );
           return {
             ok: true,
             output,
