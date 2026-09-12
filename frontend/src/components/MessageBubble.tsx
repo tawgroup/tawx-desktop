@@ -5,6 +5,7 @@ import rehypeHighlight from 'rehype-highlight';
 import type { Message } from '../types';
 import { cn } from '../lib/utils';
 import AttachmentTray from './AttachmentTray';
+import SolidStreamingText from './SolidStreamingText';
 import { IconCheck, IconCopy } from './Icons';
 
 interface Props {
@@ -206,16 +207,29 @@ return (
         )}
 
         <div className={cn('prose-chat', isStreaming && !message.content && 'caret')}>
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-            components={{
-              a: ({ ...props }) => <a {...props} target="_blank" rel="noreferrer noopener" />,
-              pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-            }}
-          >
-            {message.content}
-          </ReactMarkdown>
+          {/*
+            Streaming fast path: SolidJS reactivity island writes tokens
+            straight to the real DOM text node — no re-render of this
+            bubble's markdown, no per-token ReactMarkdown re-parse.
+            Finished messages still render through ReactMarkdown below.
+          */}
+          {isStreaming ? (
+            <SolidStreamingText
+              text={message.content}
+              className="whitespace-pre-wrap break-words"
+            />
+          ) : (
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeHighlight]}
+              components={{
+                a: ({ ...props }) => <a {...props} target="_blank" rel="noreferrer noopener" />,
+                pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+              }}
+            >
+              {message.content}
+            </ReactMarkdown>
+          )}
           {isStreaming && message.content && (
             <span className="ml-0.5 inline-block animate-blink text-accent">▍</span>
           )}
