@@ -451,8 +451,11 @@ export const CORE_TOOLS = [
 export const DEFAULT_COWORK_TOOLS: string[] = [
   'read_file',
   'list_directory',
+  'write_file',
+  'run_command',
   'git_status',
   'git_diff',
+  'git_commit',
   'update_todo',
 ];
 

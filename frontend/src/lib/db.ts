@@ -1,6 +1,6 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import type { Chat, CoworkTask, Message, Settings } from '../types';
-import { DEFAULT_SETTINGS } from '../types.ts';
+import { DEFAULT_COWORK_TOOLS, DEFAULT_SETTINGS } from '../types.ts';
 import {
   redactChatForPersistence,
   redactMessageForPersistence,
@@ -13,6 +13,15 @@ import { isProviderRoutable, normalizeProviders } from './providers.ts';
 const DB_NAME = 'chatopenapi';
 const DB_VERSION = 4;
 const SETTINGS_KEY = 'app';
+// Read-only tool list shipped before the full default. Users still on it get
+// upgraded once (see loadSettings); anyone who customized keeps their list.
+const LEGACY_DEFAULT_COWORK_TOOLS: readonly string[] = [
+  'read_file',
+  'list_directory',
+  'git_status',
+  'git_diff',
+  'update_todo',
+];
 
 interface ChatDB extends DBSchema {
   chats: {
@@ -200,12 +209,19 @@ export async function loadSettings(): Promise<Settings> {
   const providers = normalizeProviders(stored.providers ?? DEFAULT_SETTINGS.providers);
   const activeProvider = providers.find((provider) => provider.id === stored.activeProviderId && isProviderRoutable(provider))
     ?? providers.find(isProviderRoutable);
+  // One-time upgrade: users who never customized tools (still on the old
+  // read-only default) move to the full default. Customized lists are kept.
+  const storedTools: string[] | undefined = stored.coworkEnabledTools ?? DEFAULT_SETTINGS.coworkEnabledTools;
+  const coworkEnabledTools = LEGACY_DEFAULT_COWORK_TOOLS.length === storedTools.length
+    && LEGACY_DEFAULT_COWORK_TOOLS.every((tool) => storedTools.includes(tool))
+    ? [...DEFAULT_COWORK_TOOLS]
+    : storedTools;
   return {
     ...DEFAULT_SETTINGS,
     ...stored,
     providers,
     activeProviderId: activeProvider?.id ?? '',
-    coworkEnabledTools: stored.coworkEnabledTools ?? DEFAULT_SETTINGS.coworkEnabledTools,
+    coworkEnabledTools,
   };
 }
 
