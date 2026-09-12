@@ -65,6 +65,18 @@ export interface ParsedCommand {
   args: string[];
 }
 
+/** When a segment of a `&&` / `||` / `;` sequence may run. */
+export type SequenceGate = 'always' | 'onSuccess' | 'onFailure';
+
+export interface CommandSegment {
+  /** One shell-free command, parseable by parseCommand on its own. */
+  command: string;
+  /** Derived from the separator before it (`;` → always, `&&` → onSuccess, `||` → onFailure). */
+  gate: SequenceGate;
+}
+
+const MAX_SEQUENCE_SEGMENTS = 20;
+
 /** Redacts common credentials without logging the value that triggered the match. */
 export function redactText(value: string): string {
   return value
@@ -204,6 +216,98 @@ export function parseCommand(command: string): ParsedCommand {
   }
 
   return { executable, args };
+}
+
+/**
+ * Splits `cmd1 && cmd2 ; cmd3 || cmd4` into individually runnable segments.
+ * Only sequential separators are accepted — pipes, redirects, backgrounding,
+ * substitutions, and newlines still throw, because they cannot be mapped to
+ * "run this, approve that, then run the next" semantics. Quoting and escapes
+ * are honored, so separators inside quotes never split.
+ */
+export function splitSequentialCommands(command: string): CommandSegment[] {
+  if (Buffer.byteLength(command, 'utf8') > MAX_COMMAND_BYTES) {
+    throw new CommandSafetyError(`command exceeds the ${MAX_COMMAND_BYTES} byte limit`);
+  }
+  if (command.includes('\0')) throw new CommandSafetyError('command contains a null byte');
+
+  const segments: CommandSegment[] = [];
+  let current = '';
+  let gate: SequenceGate = 'always';
+  let quote: 'single' | 'double' | null = null;
+
+  const finishSegment = () => {
+    if (current.trim() === '') throw new CommandSafetyError('empty command in && / || / ; sequence');
+    segments.push({ command: current.trim(), gate });
+    current = '';
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!;
+
+    if (quote === 'single') {
+      if (character === "'") quote = null;
+      current += character;
+      continue;
+    }
+    if (quote === 'double') {
+      if (character === '"') quote = null;
+      current += character;
+      continue;
+    }
+    if (character === "'") {
+      quote = 'single';
+      current += character;
+      continue;
+    }
+    if (character === '"') {
+      quote = 'double';
+      current += character;
+      continue;
+    }
+    if (character === '\\') {
+      if (index + 1 >= command.length) throw new CommandSafetyError('command ends with an escape');
+      current += character + command[index + 1]!;
+      index += 1;
+      continue;
+    }
+    if (character === '\n' || character === '\r') {
+      throw new CommandSafetyError('multi-line commands are not allowed');
+    }
+    if (character === '`' || (character === '$' && command[index + 1] === '(')) {
+      throw new CommandSafetyError('command substitution is not allowed; split the sequence with && / ; instead');
+    }
+    if (character === '|' || character === '>' || character === '<') {
+      if (character === '|' && command[index + 1] === '|') {
+        finishSegment();
+        gate = 'onFailure';
+        index += 1;
+        continue;
+      }
+      throw new CommandSafetyError('pipes and redirects are not allowed; split the sequence with && / ; instead');
+    }
+    if (character === '&' || character === ';') {
+      const next = command[index + 1];
+      if (character === '&' && next !== '&') {
+        throw new CommandSafetyError('background execution (&) is not allowed; use && / ; instead');
+      }
+      if (character === ';' && next === ';') {
+        throw new CommandSafetyError('shell control operators are not allowed');
+      }
+      finishSegment();
+      gate = character === ';' ? 'always' : next === '|' ? 'onFailure' : 'onSuccess';
+      index += character === ';' ? 0 : 1;
+      continue;
+    }
+    current += character;
+  }
+
+  if (quote) throw new CommandSafetyError('command contains an unterminated quote');
+  finishSegment();
+  if (segments.length > MAX_SEQUENCE_SEGMENTS) {
+    throw new CommandSafetyError(`command sequence exceeds the ${MAX_SEQUENCE_SEGMENTS} command limit`);
+  }
+  return segments;
 }
 
 /** Removes inherited credentials and process-injection variables from child commands. */

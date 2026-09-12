@@ -6,6 +6,7 @@ import {
   parseCommand,
   redactText,
   redactValue,
+  splitSequentialCommands,
 } from './security.js';
 
 test('redacts structured and textual credential forms', () => {
@@ -68,4 +69,28 @@ test('child command environments omit inherited credentials and injection hooks'
     if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = previousNodeOptions;
   }
+});
+
+test('splits && / || / ; sequences with per-segment gates', () => {
+  assert.deepEqual(splitSequentialCommands('pwd'), [
+    { command: 'pwd', gate: 'always' },
+  ]);
+  assert.deepEqual(splitSequentialCommands('cd src && npm test; git status || pwd'), [
+    { command: 'cd src', gate: 'always' },
+    { command: 'npm test', gate: 'onSuccess' },
+    { command: 'git status', gate: 'always' },
+    { command: 'pwd', gate: 'onFailure' },
+  ]);
+});
+
+test('splitter honors quotes and rejects non-sequential composition', () => {
+  assert.deepEqual(splitSequentialCommands("printf 'a && b ; c' && pwd"), [
+    { command: "printf 'a && b ; c'", gate: 'always' },
+    { command: 'pwd', gate: 'onSuccess' },
+  ]);
+  assert.throws(() => splitSequentialCommands('npm test | grep fail'), /pipes and redirects/);
+  assert.throws(() => splitSequentialCommands('echo a > out.txt'), /pipes and redirects/);
+  assert.throws(() => splitSequentialCommands('npm test &'), /background execution/);
+  assert.throws(() => splitSequentialCommands('pwd &&'), /empty command/);
+  assert.throws(() => splitSequentialCommands('echo $(cat secret)'), /substitution/);
 });

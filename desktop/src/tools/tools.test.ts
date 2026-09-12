@@ -419,8 +419,8 @@ test('command runner is shell-free, confined, redacted, and destructive-git-proo
   try {
     await symlink(join(fx.outside, 'secret.txt'), join(fx.project, 'outside-link'));
     await assert.rejects(
-      () => fx.tools.execute('run_command', { command: 'printf safe; cat /etc/passwd' }),
-      CommandSafetyError,
+      () => fx.tools.execute('run_command', { command: 'printf safe | cat' }),
+      /pipes and redirects/,
     );
     await assert.rejects(
       () => fx.tools.execute('run_command', { command: 'cat ../outside/secret.txt' }),
@@ -443,6 +443,91 @@ test('command runner is shell-free, confined, redacted, and destructive-git-proo
     const output = await approved.execute('run_command', { command: "printf 'TOKEN=command-secret'" });
     assert.doesNotMatch(output.content, /command-secret/);
     assert.match(output.content, /\[REDACTED\]/);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test('command sequences approve and run each step with shell gates', async () => {
+  const fx = await fixture();
+  try {
+    let approvals = 0;
+    const tools = createCoreToolRegistration({
+      workspace: fx.workspace,
+      policy: 'allow',
+      approval: async () => {
+        approvals += 1;
+        return 'allow_once';
+      },
+    });
+
+    const both = await tools.execute('run_command', { command: 'printf one && printf two' });
+    assert.equal(approvals, 2);
+    const bothSteps = JSON.parse(both.content) as {
+      steps: Array<{ command: string; status: string; output: { stdout: string } }>;
+    };
+    assert.deepEqual(bothSteps.steps.map((step) => step.status), ['ok', 'ok']);
+    assert.match(bothSteps.steps[0]!.output.stdout, /one/);
+    assert.match(bothSteps.steps[1]!.output.stdout, /two/);
+
+    // `&&` stops after a failure…
+    approvals = 0;
+    const stopped = await tools.execute('run_command', { command: 'ls no-such-dir-xyz && printf never' });
+    assert.equal(approvals, 1);
+    const stoppedSteps = JSON.parse(stopped.content) as { steps: Array<{ status: string }> };
+    assert.deepEqual(stoppedSteps.steps.map((step) => step.status), ['failed', 'skipped']);
+
+    // …while `;` continues and `||` recovers.
+    approvals = 0;
+    const recovered = await tools.execute('run_command', { command: 'ls no-such-dir-xyz ; printf after || printf fallback' });
+    assert.equal(approvals, 2);
+    const recoveredSteps = JSON.parse(recovered.content) as {
+      steps: Array<{ status: string; output: { stdout: string } | null }>;
+    };
+    assert.deepEqual(recoveredSteps.steps.map((step) => step.status), ['failed', 'ok', 'skipped']);
+    assert.match(recoveredSteps.steps[1]!.output!.stdout, /after/);
+
+    // `cd` moves later steps but cannot escape the workspace.
+    approvals = 0;
+    const moved = await tools.execute('run_command', { command: 'cd src && pwd' });
+    assert.equal(approvals, 1);
+    const movedSteps = JSON.parse(moved.content) as {
+      steps: Array<{ status: string; output: { stdout?: string } | null }>;
+    };
+    assert.deepEqual(movedSteps.steps.map((step) => step.status), ['ok', 'ok']);
+    assert.match(movedSteps.steps[1]!.output!.stdout!, /src/);
+    await assert.rejects(
+      () => tools.execute('run_command', { command: 'cd .. && pwd' }),
+      WorkspaceError,
+    );
+
+    // A dangerous step is still confined even mid-sequence.
+    await assert.rejects(
+      () => tools.execute('run_command', { command: 'printf safe; cat /etc/passwd' }),
+      WorkspaceError,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test('denying one sequence step aborts the whole sequence', async () => {
+  const fx = await fixture();
+  try {
+    let calls = 0;
+    const tools = createCoreToolRegistration({
+      workspace: fx.workspace,
+      policy: 'allow',
+      approval: async () => {
+        calls += 1;
+        return calls === 1 ? 'allow_once' : 'deny';
+      },
+    });
+    await assert.rejects(
+      () => tools.execute('run_command', { command: 'printf one && printf two' }),
+      ToolDenied,
+    );
+    assert.equal(calls, 2);
   } finally {
     await fx.cleanup();
   }

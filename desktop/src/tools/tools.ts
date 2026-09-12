@@ -9,7 +9,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Tool } from '../providers/types.js';
 import { createUnifiedDiff, truncateUtf8 } from './diff.js';
 import {
@@ -18,6 +18,7 @@ import {
   parseCommand,
   redactText,
   redactValue,
+  splitSequentialCommands,
   type ParsedCommand,
 } from './security.js';
 import { Workspace, WorkspaceError } from './workspace.js';
@@ -237,7 +238,7 @@ export const CORE_TOOL_DEFINITIONS: Tool[] = [
     required: ['path', 'content'],
     additionalProperties: false,
   }),
-  functionTool('run_command', 'Run one shell-free command in the workspace. Shell operators and unsafe executables are rejected.', {
+  functionTool('run_command', 'Run one shell-free command in the workspace, or several joined by && / ; / ||. Each command runs separately and needs its own approval; pipes, redirects, and substitutions are rejected.', {
     type: 'object',
     properties: {
       command: { type: 'string' },
@@ -569,7 +570,13 @@ export class Toolbox {
     if (timeoutMs < 1 || timeoutMs > MAX_COMMAND_TIMEOUT_MS) {
       throw new ToolInputError(`timeout_ms must be between 1 and ${MAX_COMMAND_TIMEOUT_MS}`);
     }
-    const parsed = parseCommand(command);
+    let parsed: ParsedCommand | null = null;
+    try {
+      parsed = parseCommand(command);
+    } catch (error) {
+      if (!(error instanceof CommandSafetyError)) throw error;
+      return this.runCommandSequence(command, timeoutMs, context);
+    }
     const confined = await confineCommandPaths(parsed, this.workspace);
 
     await this.authorize('run_command', 'command', context, {
@@ -600,6 +607,106 @@ export class Toolbox {
       data: result,
       truncated: result.truncated || output.truncated,
     };
+  }
+
+  /**
+   * Runs `a && b ; c || d` as individually approved steps. `&&` stops the
+   * sequence on failure, `;` always continues, `||` runs the next step only
+   * after a failure. `cd <dir>` moves the working directory for the steps
+   * after it (still confined to the workspace); it needs no approval because
+   * it has no side effects. Denying any step aborts the whole sequence.
+   */
+  private async runCommandSequence(
+    command: string,
+    timeoutMs: number,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    const segments = splitSequentialCommands(command);
+    if (segments.length < 2) {
+      // Not actually a sequence (e.g. a forbidden executable tripped the
+      // single-command parse) — surface the original single-command error.
+      parseCommand(command);
+      throw new CommandSafetyError('command is not runnable');
+    }
+
+    const root = requireWorkspaceRoot(this.workspace);
+    let cwd = root;
+    // Outcome of the most recent executed step (skipped steps don't touch it),
+    // which is what the next `&&` / `||` gate observes — same as a shell.
+    let prevFailed = false;
+    let stoppedEarly = false;
+    const steps: Array<{
+      command: string;
+      status: 'ok' | 'failed' | 'skipped';
+      exitCode: number | null;
+      output: unknown;
+    }> = [];
+
+    for (let index = 0; index < segments.length; index += 1) {
+      const segment = segments[index]!;
+      const label = `${index + 1}/${segments.length}`;
+      if ((segment.gate === 'onSuccess' && prevFailed) || (segment.gate === 'onFailure' && !prevFailed)) {
+        // `&&` skips the rest after a failure; `||` skips when the previous
+        // step succeeded. `;` steps always reach this point and run.
+        if (segment.gate === 'onSuccess' && prevFailed) stoppedEarly = true;
+        steps.push({ command: segment.command, status: 'skipped', exitCode: null, output: null });
+        continue;
+      }
+
+      const parsed = parseCommand(segment.command);
+      if (basename(parsed.executable).toLowerCase() === 'cd') {
+        cwd = await this.changeSequenceDirectory(parsed, cwd);
+        prevFailed = false;
+        steps.push({ command: segment.command, status: 'ok', exitCode: 0, output: { cwd } });
+        continue;
+      }
+
+      const confined = await confineCommandPaths(parsed, this.workspace, cwd);
+      await this.authorize('run_command', 'command', context, {
+        title: `Run ${basename(confined.executable)} (${label})`,
+        detail: `Part ${label} of an approved sequence: ${command} (timeout ${timeoutMs} ms per command).`,
+        input: { command: segment.command, sequence: command, timeout_ms: timeoutMs },
+        risk: {
+          level: 'high',
+          summary: 'This command can modify workspace files or contact external services.',
+          reasons: ['Commands run as your local user.', 'Output is capped and inherited credentials are removed.'],
+        },
+      });
+
+      const processResult = await runProcess(
+        confined.executable,
+        confined.args,
+        cwd,
+        commandEnvironment(cwd),
+        timeoutMs,
+        context.signal,
+      );
+      const result = redactProcessResult(processResult);
+      const ok = (result.exitCode ?? 1) === 0 && !result.timedOut;
+      steps.push({ command: segment.command, status: ok ? 'ok' : 'failed', exitCode: result.exitCode, output: result });
+      prevFailed = !ok;
+    }
+
+    const output = truncateUtf8(JSON.stringify({ sequence: command, stoppedEarly, steps }), MAX_OUTPUT_BYTES);
+    return {
+      tool: 'run_command',
+      content: output.value,
+      data: { sequence: command, stoppedEarly, steps },
+      truncated: output.truncated,
+    };
+  }
+
+  /** Resolves `cd [dir]` inside the workspace; defaults to the workspace root. */
+  private async changeSequenceDirectory(parsed: ParsedCommand, cwd: string): Promise<string> {
+    if (parsed.args.length > 1) throw new CommandSafetyError('cd accepts at most one directory');
+    const target = parsed.args[0] ?? '.';
+    if (target === '-') throw new CommandSafetyError('cd - is not supported in command sequences');
+    const absolute = join(cwd, target);
+    // Throws WorkspaceError when the target escapes the workspace.
+    await this.workspace.relativePath(absolute);
+    const info = await stat(absolute).catch(() => null);
+    if (!info?.isDirectory()) throw new CommandSafetyError(`cd: no such directory in the workspace: ${target}`);
+    return absolute;
   }
 
   private async gitStatus(context: ToolExecutionContext): Promise<ToolExecutionResult> {
@@ -1079,10 +1186,18 @@ async function atomicWrite(
   }
 }
 
-async function confineCommandPaths(parsed: ParsedCommand, workspace: Workspace): Promise<ParsedCommand> {
+async function confineCommandPaths(
+  parsed: ParsedCommand,
+  workspace: Workspace,
+  base?: string,
+): Promise<ParsedCommand> {
+  // Paths resolve against the sequence working directory (the workspace root
+  // for single commands); resolveInside canonicalizes and rejects escapes.
+  const baseDir = base ?? workspace.selected ?? '';
+  const resolveInside = (candidate: string) => workspace.resolveInside(resolve(baseDir, candidate));
   let executable = parsed.executable;
   if (executable.includes('/') || executable.includes(sep)) {
-    executable = await workspace.resolveInside(executable);
+    executable = await resolveInside(executable);
   }
 
   for (const argument of parsed.args) {
@@ -1109,7 +1224,7 @@ async function confineCommandPaths(parsed: ParsedCommand, workspace: Workspace):
       ? argument.slice(argument.indexOf('=') + 1)
       : argument;
     if (candidate === '') continue;
-    await workspace.resolveInside(candidate);
+    await resolveInside(candidate);
   }
 
   return { executable, args: parsed.args };
