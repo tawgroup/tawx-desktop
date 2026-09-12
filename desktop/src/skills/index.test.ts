@@ -151,10 +151,11 @@ test('persists project and thread selections and resolves them as guarded instru
 });
 
 /**
- * A workspace that has never saved a selection still gets the learning skills,
- * and saving any selection — including an empty one — takes that default away.
+ * A workspace that has never saved a selection starts with every discovered
+ * skill enabled (opt-out), and saving any selection — including an empty
+ * one — replaces that default entirely.
  */
-test('enables the default skills until a workspace saves its own selection', async () => {
+test('enables every discovered skill until a workspace saves its own selection', async () => {
   const base = await mkdtemp(join(tmpdir(), 'tawx-skill-defaults-'));
   try {
     const userSkills = join(base, 'user-skills');
@@ -182,18 +183,18 @@ test('enables the default skills until a workspace saves its own selection', asy
       const unconfigured = await fetchCatalog(server.url, workspace);
       assert.deepEqual(
         unconfigured.enabledSkillIds.map((id) => unconfigured.skills.find((skill) => skill.id === id)!.name).sort(),
-        ['learn-anything', 'probe-knowledge'],
+        ['learn-anything', 'probe-knowledge', 'write-a-brief'],
       );
 
       const defaults = await runtime.resolveInstructions({ workspace });
-      assert.deepEqual(defaults.enabledSkills.map((skill) => skill.name).sort(), ['learn-anything', 'probe-knowledge']);
+      assert.deepEqual(defaults.enabledSkills.map((skill) => skill.name).sort(), ['learn-anything', 'probe-knowledge', 'write-a-brief']);
       assert.match(defaults.systemPrompt, /Body of learn-anything/);
 
       // Chat has no workspace at all and still gets them, over HTTP.
       const instructions = await fetch(`${server.url}/desktop/skills/instructions`);
       assert.equal(instructions.status, 200);
       const payload = await instructions.json() as { systemPrompt: string; enabledSkills: Array<{ name: string }> };
-      assert.deepEqual(payload.enabledSkills.map((skill) => skill.name).sort(), ['learn-anything', 'probe-knowledge']);
+      assert.deepEqual(payload.enabledSkills.map((skill) => skill.name).sort(), ['learn-anything', 'probe-knowledge', 'write-a-brief']);
       assert.match(payload.systemPrompt, /Body of probe-knowledge/);
 
       const chosen = unconfigured.skills.find((skill) => skill.name === 'write-a-brief')!;
@@ -224,7 +225,7 @@ test('enables the default skills until a workspace saves its own selection', asy
   }
 });
 
-test('a default skill that is not installed is silently absent', async () => {
+test('an empty workspace still resolves to no skills', async () => {
   const base = await mkdtemp(join(tmpdir(), 'tawx-skill-missing-'));
   try {
     const userSkills = join(base, 'user-skills');

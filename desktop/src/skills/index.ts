@@ -54,12 +54,13 @@ const MAX_REQUEST_BYTES = 256 * 1024;
 const MAX_INSTRUCTION_BYTES = 256 * 1024;
 
 /**
- * Skills every mode starts with. They are a default, not a floor: the moment a
- * workspace saves a selection, that selection is the whole answer and these are
- * only included if the user kept them. A default that is not installed is
- * silently absent.
+ * Opt-out defaults: a workspace that never saved a selection starts with
+ * every discovered skill enabled. The moment a workspace saves a selection,
+ * that selection is the whole answer. Total instruction size is still
+ * bounded by MAX_INSTRUCTION_BYTES, and the frontend token budget guards
+ * the rest — but a skill-heavy workspace will carry a bigger system prompt
+ * until the user trims it in the Skills panel.
  */
-const DEFAULT_SKILL_NAMES = ['learn-anything', 'probe-knowledge', 'plan-learning-path', 'teach-adaptively'] as const;
 
 export function createSkillsRuntime(options: SkillsRuntimeOptions = {}): SkillsRuntime {
   const desktopHome = process.env.TAWX_DESKTOP_HOME ?? join(homedir(), 'tawx-desktop');
@@ -176,18 +177,12 @@ class LocalSkillsRuntime implements SkillsRuntime {
 }
 
 /**
- * Matches on the skill's own name rather than its id, because an id is a hash of
- * the absolute path and so differs between machines and between the user and
- * project copies of the same skill.
+ * Default selection is every discovered skill id. Ids are stable per machine
+ * (hash of the absolute path), so this is computed fresh on each call rather
+ * than persisted.
  */
 function defaultSkillIds(skills: readonly SkillDetail[]): string[] {
-  const wanted = new Set<string>(DEFAULT_SKILL_NAMES);
-  const chosen = new Map<string, string>();
-  for (const skill of skills) {
-    const key = skill.name.toLocaleLowerCase('en').replace(/\s+/g, '-');
-    if (wanted.has(key) && !chosen.has(key)) chosen.set(key, skill.id);
-  }
-  return [...chosen.values()];
+  return skills.map((skill) => skill.id);
 }
 
 function skillSummary(skill: SkillDetail): SkillSummary {
